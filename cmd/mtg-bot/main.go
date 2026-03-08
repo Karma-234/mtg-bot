@@ -85,6 +85,10 @@ func main() {
 	}()
 	<-done
 	b.Stop()
+	for chatID, cancel := range taskManager.tasks {
+		cancel()
+		log.Printf("Cancelled task for chat %d", chatID)
+	}
 	log.Println("Bot stopped")
 }
 
@@ -106,15 +110,17 @@ func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, t
 			log.Printf("Task for chat %d completed or cancelled", chat.ID)
 		}()
 		ticker := time.NewTicker(20 * time.Second)
+		messageCount := 0
 		for {
 			select {
-			case <-ticker.C:
+			case t := <-ticker.C:
 				log.Printf("Executing scheduled task for chat %d", chat.ID)
-				b.Send(chat, "Here is the latest MTG news...")
+				b.Send(chat, "Here is the latest MTG news...\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count: "+string(rune(messageCount)))
 			case <-ctx.Done():
 				log.Printf("Task for chat %d cancelled or timed out", chat.ID)
 				return
 			}
+			messageCount++
 		}
 	}()
 }
