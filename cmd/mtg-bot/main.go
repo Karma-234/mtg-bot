@@ -1,14 +1,21 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"gopkg.in/telebot.v4"
 )
+
+type TaskManager struct {
+	tasks   map[int64]context.CancelFunc
+	tasksMu sync.RWMutex
+}
 
 func main() {
 	apiKey := os.Getenv("TG_BOT_API_KEY")
@@ -21,6 +28,7 @@ func main() {
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
 	}
 	b, _ := telebot.NewBot(pref)
+	taskManager := &TaskManager{tasks: make(map[int64]context.CancelFunc)}
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
 	cmdsn := []telebot.Command{
@@ -59,6 +67,7 @@ func main() {
 			log.Printf("Received task duration selection '%s' from user %s (ID: %d) in chat %d", duration.String(), ctx.Sender().Username, ctx.Sender().ID, ctx.Chat().ID)
 
 			ctx.Edit("You selected task duration: "+duration.String(), &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
+			taskScheduler(b, duration, ctx.Chat(), taskManager)
 
 			return ctx.Respond(&telebot.CallbackResponse{Text: "Task duration set to " + duration.String()})
 		}
@@ -77,4 +86,35 @@ func main() {
 	<-done
 	b.Stop()
 	log.Println("Bot stopped")
+}
+
+func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, taskManager *TaskManager) {
+	taskManager.tasksMu.Lock()
+	if cancel, exists := taskManager.tasks[chat.ID]; exists {
+		cancel()
+		log.Printf("Existing task for chat %d cancelled", chat.ID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	taskManager.tasks[chat.ID] = cancel
+	taskManager.tasksMu.Unlock()
+
+	go func() {
+		defer func() {
+			taskManager.tasksMu.Lock()
+			delete(taskManager.tasks, chat.ID)
+			taskManager.tasksMu.Unlock()
+			log.Printf("Task for chat %d completed or cancelled", chat.ID)
+		}()
+		ticker := time.NewTicker(20 * time.Second)
+		for {
+			select {
+			case <-ticker.C:
+				log.Printf("Executing scheduled task for chat %d", chat.ID)
+				b.Send(chat, "Here is the latest MTG news...")
+			case <-ctx.Done():
+				log.Printf("Task for chat %d cancelled or timed out", chat.ID)
+				return
+			}
+		}
+	}()
 }
