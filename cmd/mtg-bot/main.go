@@ -24,18 +24,28 @@ func main() {
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
 	cmdsn := []telebot.Command{
-		{Text: "start", Description: "Starts the bot"},
+		{Text: "start", Description: "Says Hello to the user"},
 	}
 	err := b.SetCommands(cmdsn)
 	if err != nil {
 		log.Printf("Error setting commands: %v", err)
 	}
+	startButton := &telebot.ReplyMarkup{}
+	fetcherBtn := startButton.Data("Fetch latest MTG news", "fetch-news")
+	startButton.Inline(startButton.Row(fetcherBtn))
 
 	b.Handle("/start", func(ctx telebot.Context) error {
 		sender := ctx.Sender()
-		chat_id := ctx.Chat().ID
-		log.Printf("Received /start command from user %s (ID: %d) in chat %d", sender.Username, sender.ID, chat_id)
-		return ctx.Send("Hello, " + sender.Username + "!")
+
+		log.Printf("Received /start command from user %s (ID: %d) in chat %d", sender.Username, sender.ID, sender.ID)
+		return ctx.Send("Hello, "+sender.Username+"!\n Here are the available services:\n\n", startButton)
+	})
+	b.Handle(&fetcherBtn, func(ctx telebot.Context) error {
+		log.Printf("Received fetch news request from user %s (ID: %d) in chat %d", ctx.Sender().Username, ctx.Sender().ID, ctx.Chat().ID)
+
+		ctx.Edit("Fetching latest MTG news...", &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
+		time.Sleep(3 * time.Second)
+		return ctx.Send("Here is the  latest MTG news...", &telebot.SendOptions{ReplyMarkup: startButton})
 	})
 
 	done := make(chan os.Signal, 1)
