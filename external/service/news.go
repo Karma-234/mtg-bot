@@ -1,7 +1,7 @@
 package service
 
-type ExtenalService struct{}
+type ExternalService struct{}
 
 type ExternalNewsService struct {
-	ExtenalService
+	ExternalService
 }
