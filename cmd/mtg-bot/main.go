@@ -40,10 +40,10 @@ func main() {
 		merchantConfig = service.NewMerchantServiceConfig("prod")
 	case dev:
 		log.Println("Using development/testnet environment")
-		merchantConfig = service.NewMerchantServiceConfig("test")
+		merchantConfig = service.NewMerchantServiceConfig("dev")
 	default:
 		log.Println("No environment flag provided, defaulting to development/testnet environment")
-		merchantConfig = service.NewMerchantServiceConfig("test")
+		merchantConfig = service.NewMerchantServiceConfig("dev")
 	}
 
 	client := &http.Client{
