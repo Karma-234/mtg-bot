@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -51,11 +52,11 @@ func main() {
 	b.Handle("/start", func(ctx telebot.Context) error {
 		sender := ctx.Sender()
 
-		log.Printf("Received /start command from user %s (ID: %d) in chat %d", sender.Username, sender.ID, sender.ID)
+		log.Printf("Received /start command from user %s  ", sender.Username)
 		return ctx.Send("Hello, "+sender.Username+"!\n Here are the available services:\n\n", startButtonMarkup)
 	})
 	b.Handle(&fetcherBtn, func(ctx telebot.Context) error {
-		log.Printf("Received fetch news request from user %s (ID: %d) in chat %d", ctx.Sender().Username, ctx.Sender().ID, ctx.Chat().ID)
+		log.Printf("Received fetch news request from user %s ", ctx.Sender().Username)
 
 		ctx.Edit("Fetching latest MTG news...", &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
 		time.Sleep(3 * time.Second)
@@ -64,7 +65,7 @@ func main() {
 
 	durationHandler := func(duration time.Duration) telebot.HandlerFunc {
 		return func(ctx telebot.Context) error {
-			log.Printf("Received task duration selection '%s' from user %s (ID: %d) in chat %d", duration.String(), ctx.Sender().Username, ctx.Sender().ID, ctx.Chat().ID)
+			log.Printf("Received task duration selection '%s' from user %s", duration.String(), ctx.Sender().Username)
 
 			ctx.Edit("You selected task duration: "+duration.String(), &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
 			taskScheduler(b, duration, ctx.Chat(), taskManager)
@@ -103,21 +104,26 @@ func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, t
 	taskManager.tasksMu.Unlock()
 
 	go func() {
+		ticker := time.NewTicker(20 * time.Second)
 		defer func() {
+			ticker.Stop()
 			taskManager.tasksMu.Lock()
 			delete(taskManager.tasks, chat.ID)
 			taskManager.tasksMu.Unlock()
 			log.Printf("Task for chat %d completed or cancelled", chat.ID)
 		}()
-		ticker := time.NewTicker(20 * time.Second)
-		messageCount := 0
+
+		messageCount := 1
 		for {
 			select {
 			case t := <-ticker.C:
-				log.Printf("Executing scheduled task for chat %d", chat.ID)
-				b.Send(chat, "Here is the latest MTG news...\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count: "+string(rune(messageCount)))
+				log.Printf("Executing scheduled task for chat %s", chat.Username)
+				b.Send(chat, "Here is the latest MTG news...\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount))
 			case <-ctx.Done():
-				log.Printf("Task for chat %d cancelled or timed out", chat.ID)
+				log.Printf("Task for chat %v Completed", chat.Username)
+				if _, err := b.Send(chat, "Task for user "+chat.Username+" completed"); err != nil {
+					log.Printf("Error sending completion message to chat %d: %v", chat.ID, err)
+				}
 				return
 			}
 			messageCount++
