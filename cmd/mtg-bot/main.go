@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/karma-234/mtg-bot/external/service"
 	"gopkg.in/telebot.v4"
 )
 
@@ -23,7 +26,32 @@ func main() {
 	if apiKey == "" {
 		log.Fatal("TG_BOT_API_KEY is not set")
 	}
+	var prod, dev bool
+	flag.BoolVar(&prod, "prod", false, "Use production environment")
+	flag.BoolVar(&dev, "dev", false, "Use development/testnet environment")
 
+	flag.Parse()
+	var merchantConfig *service.MerchantServiceConfig
+	switch {
+	case prod && dev:
+		log.Fatal("Cannot use both --prod and --dev flags at the same time")
+	case prod:
+		log.Println("Using production environment")
+		merchantConfig = service.NewMerchantServiceConfig("prod")
+	case dev:
+		log.Println("Using development/testnet environment")
+		merchantConfig = service.NewMerchantServiceConfig("test")
+	default:
+		log.Println("No environment flag provided, defaulting to development/testnet environment")
+		merchantConfig = service.NewMerchantServiceConfig("test")
+	}
+
+	client := &http.Client{
+		Transport: &service.RequestInterceptor{
+			Base:          http.DefaultTransport,
+			ServiceConfig: *merchantConfig,
+		}}
+	_ = client
 	pref := telebot.Settings{
 		Token:  apiKey,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
