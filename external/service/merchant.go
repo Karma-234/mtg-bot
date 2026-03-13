@@ -37,13 +37,66 @@ func NewMerchantServiceConfig(e string) *MerchantServiceConfig {
 type MerchantService struct {
 	ExternalService
 	config MerchantServiceConfig
+	client http.Client
 }
 
-func (s *MerchantService) GetLatestOrders(req *http.Request) error {
+func (s *MerchantService) GetLatestOrders(opts *OrderQueryRequest) (*http.Response, error) {
+	url := s.config.BaseURL + GETALLORDERS
+	if opts == nil {
+		opts = &OrderQueryRequest{
+			Page:     1,
+			PageSize: 10,
+		}
+	}
 
-	return nil
+	res, err := PostJSON(&s.client, url, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	defer res.Body.Close()
+
+	return res, err
 }
 
-func (s *MerchantService) GetTradeDetails() {
+func (s *MerchantService) GetPendingOrders(opts *OrderQueryRequest) (*http.Response, error) {
+	url := s.config.BaseURL + GETPENDINGORDERS
 
+	if opts == nil {
+		status := 10
+		opts = &OrderQueryRequest{
+			Page:     1,
+			PageSize: 30,
+			Status:   &status,
+		}
+	}
+
+	res, err := PostJSON(&s.client, url, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	return res, err
+}
+
+func (s *MerchantService) GetOrderDetail(opts SingleOrderQueryRequest) (*http.Response, error) {
+	url := s.config.BaseURL + GETORDERDETAIL
+	res, err := PostJSON(&s.client, url, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	return res, err
+}
+
+func (s *MerchantService) MarkOrderPaid(opts MarkOrderPaidRequest) (*http.Response, error) {
+	url := s.config.BaseURL + MARKORDERASPAID
+	res, err := PostJSON(&s.client, url, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	return res, err
 }
