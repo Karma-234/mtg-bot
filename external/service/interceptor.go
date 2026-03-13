@@ -24,10 +24,12 @@ func (i *RequestInterceptor) RoundTrip(req *http.Request) (*http.Response, error
 	h := hmac.New(sha256.New, []byte(i.ServiceConfig.APISecret))
 	h.Write([]byte(strconv.FormatInt(now, 10) + i.ServiceConfig.APIKey + "5000"))
 	signature := hex.EncodeToString(h.Sum(nil))
-	req.Header.Set("X-Service", "vaultmind")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-BAPI-API-KEY", i.ServiceConfig.APIKey)
 	req.Header.Set("X-BAPI-SIGN", signature)
+	req.Header.Set("X-BAPI-TIMESTAMP", strconv.FormatInt(now, 10))
+	req.Header.Set("X-BAPI-SIGN-TYPE", "2")
+	req.Header.Set("X-BAPI-RECV-WINDOW", "5000")
 	resp, err := i.Base.RoundTrip(req)
 	return resp, err
 }

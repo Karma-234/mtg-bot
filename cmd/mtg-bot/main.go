@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -47,11 +48,13 @@ func main() {
 	}
 
 	client := &http.Client{
+		Timeout: 10 * time.Second,
 		Transport: &service.RequestInterceptor{
 			Base:          http.DefaultTransport,
 			ServiceConfig: *merchantConfig,
 		}}
 	_ = client
+	merchantService := &service.MerchantService{Config: *merchantConfig, Client: *client}
 	pref := telebot.Settings{
 		Token:  apiKey,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -96,7 +99,7 @@ func main() {
 			log.Printf("Received task duration selection '%s' from user %s", duration.String(), ctx.Sender().Username)
 
 			ctx.Edit("You selected task duration: "+duration.String(), &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
-			taskScheduler(b, duration, ctx.Chat(), taskManager)
+			taskScheduler(b, duration, ctx.Chat(), taskManager, merchantService)
 
 			return ctx.Respond(&telebot.CallbackResponse{Text: "Task duration set to " + duration.String()})
 		}
@@ -121,7 +124,7 @@ func main() {
 	log.Println("Bot stopped")
 }
 
-func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, taskManager *TaskManager) {
+func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, taskManager *TaskManager, service *service.MerchantService) {
 	taskManager.tasksMu.Lock()
 	if cancel, exists := taskManager.tasks[chat.ID]; exists {
 		cancel()
@@ -146,6 +149,35 @@ func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, t
 			select {
 			case t := <-ticker.C:
 				log.Printf("Executing scheduled task for chat %s", chat.Username)
+				resp, err := service.GetLatestOrders(nil)
+				// if err != nil {
+				// 	log.Printf("Failed to get Orders doe to : %v", err)
+				// 	b.Send(chat, "Failed to fetch orders\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount))
+				// 	continue
+				// }
+				// log.Println("Status:", resp.Status)
+				// log.Println("Headers:", resp.Header)
+
+				body, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+
+				if err != nil {
+					log.Println("Read error:", err)
+					continue
+				}
+
+				log.Printf("Body length: %d", len(body))
+				log.Printf("Body content: %q", string(body))
+				// var result map[string]any
+
+				// err = json.NewDecoder(resp.Body).Decode(&result)
+				// if err != nil {
+				// 	log.Println("Decode error:", err)
+				// } else {
+				// 	log.Printf("Decoded response: %+v", result)
+				// }
+				// body, _ := io.ReadAll(resp.Body)
+				log.Printf("Here are the results: %v", string(body))
 				b.Send(chat, "Here is the latest MTG news...\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount))
 			case <-ctx.Done():
 				log.Printf("Task for chat %v Completed", chat.Username)

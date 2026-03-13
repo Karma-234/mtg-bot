@@ -36,12 +36,12 @@ func NewMerchantServiceConfig(e string) *MerchantServiceConfig {
 
 type MerchantService struct {
 	ExternalService
-	config MerchantServiceConfig
-	client http.Client
+	Config MerchantServiceConfig
+	Client http.Client
 }
 
 func (s *MerchantService) GetLatestOrders(opts *OrderQueryRequest) (*http.Response, error) {
-	url := s.config.BaseURL + GETALLORDERS
+	url := s.Config.BaseURL + GETALLORDERS
 	if opts == nil {
 		opts = &OrderQueryRequest{
 			Page:     1,
@@ -49,18 +49,16 @@ func (s *MerchantService) GetLatestOrders(opts *OrderQueryRequest) (*http.Respon
 		}
 	}
 
-	res, err := PostJSON(&s.client, url, opts)
+	res, err := PostJSON(&s.Client, url, opts)
 	if err != nil {
 		return nil, err
 	}
-
-	defer res.Body.Close()
 
 	return res, err
 }
 
 func (s *MerchantService) GetPendingOrders(opts *OrderQueryRequest) (*http.Response, error) {
-	url := s.config.BaseURL + GETPENDINGORDERS
+	url := s.Config.BaseURL + GETPENDINGORDERS
 
 	if opts == nil {
 		status := 10
@@ -71,7 +69,7 @@ func (s *MerchantService) GetPendingOrders(opts *OrderQueryRequest) (*http.Respo
 		}
 	}
 
-	res, err := PostJSON(&s.client, url, opts)
+	res, err := PostJSON(&s.Client, url, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +79,8 @@ func (s *MerchantService) GetPendingOrders(opts *OrderQueryRequest) (*http.Respo
 }
 
 func (s *MerchantService) GetOrderDetail(opts SingleOrderQueryRequest) (*http.Response, error) {
-	url := s.config.BaseURL + GETORDERDETAIL
-	res, err := PostJSON(&s.client, url, opts)
+	url := s.Config.BaseURL + GETORDERDETAIL
+	res, err := PostJSON(&s.Client, url, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -92,8 +90,8 @@ func (s *MerchantService) GetOrderDetail(opts SingleOrderQueryRequest) (*http.Re
 }
 
 func (s *MerchantService) MarkOrderPaid(opts MarkOrderPaidRequest) (*http.Response, error) {
-	url := s.config.BaseURL + MARKORDERASPAID
-	res, err := PostJSON(&s.client, url, opts)
+	url := s.Config.BaseURL + MARKORDERASPAID
+	res, err := PostJSON(&s.Client, url, opts)
 	if err != nil {
 		return nil, err
 	}
