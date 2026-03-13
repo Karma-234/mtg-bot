@@ -31,7 +31,3 @@ func (i *RequestInterceptor) RoundTrip(req *http.Request) (*http.Response, error
 	resp, err := i.Base.RoundTrip(req)
 	return resp, err
 }
-
-func (i *RequestInterceptor) InterceptResponse() {
-
-}
