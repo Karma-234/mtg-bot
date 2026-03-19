@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 )
@@ -57,7 +58,7 @@ func (s *MerchantService) GetLatestOrders(opts *OrderQueryRequest) (*http.Respon
 	return res, err
 }
 
-func (s *MerchantService) GetPendingOrders(opts *OrderQueryRequest) (*http.Response, error) {
+func (s *MerchantService) GetPendingOrders(opts *OrderQueryRequest) (*OrdersResponse, error) {
 	url := s.Config.BaseURL + GETPENDINGORDERS
 
 	if opts == nil {
@@ -73,9 +74,15 @@ func (s *MerchantService) GetPendingOrders(opts *OrderQueryRequest) (*http.Respo
 	if err != nil {
 		return nil, err
 	}
+
 	defer res.Body.Close()
 
-	return res, err
+	var result OrdersResponse
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return &result, nil
 }
 
 func (s *MerchantService) GetOrderDetail(opts SingleOrderQueryRequest) (*http.Response, error) {
