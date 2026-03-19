@@ -90,7 +90,6 @@ func main() {
 		log.Printf("Received fetch news request from user %s ", ctx.Sender().Username)
 
 		ctx.Edit("Fetching latest MTG news...", &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
-		time.Sleep(3 * time.Second)
 		return ctx.Send("Here is the  latest MTG news...", &telebot.SendOptions{ReplyMarkup: taskDurationMarkup})
 	})
 
@@ -135,7 +134,7 @@ func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, t
 	taskManager.tasksMu.Unlock()
 
 	go func() {
-		ticker := time.NewTicker(20 * time.Second)
+		ticker := time.NewTicker(15 * time.Second)
 		defer func() {
 			ticker.Stop()
 			taskManager.tasksMu.Lock()
