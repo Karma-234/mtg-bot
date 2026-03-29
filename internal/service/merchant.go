@@ -41,7 +41,7 @@ type MerchantService struct {
 	Client http.Client
 }
 
-func (s *MerchantService) GetLatestOrders(opts *OrderQueryRequest) (*http.Response, error) {
+func (s *MerchantService) GetLatestOrders(opts *OrderQueryRequest) (*OrdersResponse, error) {
 	url := s.Config.BaseURL + GETALLORDERS
 	if opts == nil {
 		opts = &OrderQueryRequest{
@@ -54,8 +54,14 @@ func (s *MerchantService) GetLatestOrders(opts *OrderQueryRequest) (*http.Respon
 	if err != nil {
 		return nil, err
 	}
+	defer res.Body.Close()
 
-	return res, err
+	var result OrdersResponse
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return &result, err
 }
 
 func (s *MerchantService) GetPendingOrders(opts *OrderQueryRequest) (*OrdersResponse, error) {

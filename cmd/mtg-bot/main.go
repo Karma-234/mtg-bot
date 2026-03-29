@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -13,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/karma-234/mtg-bot/external/service"
+	"github.com/karma-234/mtg-bot/internal/service"
 	"gopkg.in/telebot.v4"
 )
 
@@ -149,34 +148,14 @@ func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, t
 			case t := <-ticker.C:
 				log.Printf("Executing scheduled task for chat %s", chat.Username)
 				resp, err := service.GetLatestOrders(nil)
-				// if err != nil {
-				// 	log.Printf("Failed to get Orders doe to : %v", err)
-				// 	b.Send(chat, "Failed to fetch orders\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount))
-				// 	continue
-				// }
-				// log.Println("Status:", resp.Status)
-				// log.Println("Headers:", resp.Header)
-
-				body, err := io.ReadAll(resp.Body)
-				resp.Body.Close()
-
 				if err != nil {
-					log.Println("Read error:", err)
+					log.Printf("Failed to get Orders to : %v", err)
+					b.Send(chat, "Failed to fetch orders\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount))
 					continue
 				}
-
-				log.Printf("Body length: %d", len(body))
-				log.Printf("Body content: %q", string(body))
-				// var result map[string]any
-
-				// err = json.NewDecoder(resp.Body).Decode(&result)
-				// if err != nil {
-				// 	log.Println("Decode error:", err)
-				// } else {
-				// 	log.Printf("Decoded response: %+v", result)
-				// }
-				// body, _ := io.ReadAll(resp.Body)
-				log.Printf("Here are the results: %v", string(body))
+				if resp.RetCode != 0 {
+					log.Printf("Error from merchant: %v", resp.RetMsg)
+				}
 				b.Send(chat, "Here is the latest MTG news...\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount))
 			case <-ctx.Done():
 				log.Printf("Task for chat %v Completed", chat.Username)
