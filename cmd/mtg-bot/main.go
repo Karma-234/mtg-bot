@@ -122,7 +122,7 @@ func main() {
 	log.Println("Bot stopped")
 }
 
-func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, taskManager *TaskManager, service *service.MerchantService) {
+func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, taskManager *TaskManager, srv *service.MerchantService) {
 	taskManager.tasksMu.Lock()
 	if cancel, exists := taskManager.tasks[chat.ID]; exists {
 		cancel()
@@ -147,16 +147,17 @@ func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, t
 			select {
 			case t := <-ticker.C:
 				log.Printf("Executing scheduled task for chat %s", chat.Username)
-				resp, err := service.GetLatestOrders(nil)
+				resp, err := srv.GetLatestOrders(nil)
 				if err != nil {
 					log.Printf("Failed to get Orders to : %v", err)
 					b.Send(chat, "Failed to fetch orders\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount))
 					continue
 				}
-				if resp.RetCode != 0 {
-					log.Printf("Error from merchant: %v", resp.RetMsg)
+				if !resp.OK() {
+					log.Printf("Error from merchant: %v", resp.Error())
 				}
-				b.Send(chat, "Here is the latest MTG news...\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount))
+				msg := service.FormatOrdersMessage(resp)
+				b.Send(chat, "Here is the latest MTG news...\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount)+"\n\n"+msg)
 			case <-ctx.Done():
 				log.Printf("Task for chat %v Completed", chat.Username)
 				if _, err := b.Send(chat, "Task for user "+chat.Username+" completed"); err != nil {

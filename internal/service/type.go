@@ -23,7 +23,7 @@ func (b BaseResponse) Error() error {
 	if b.OK() {
 		return nil
 	}
-	return fmt.Errorf("backend error ret_code=%d ret_msg=%s ext_code=%s", b.RetCode, b.RetMsg, b.ExtCode)
+	return fmt.Errorf("Backend error ret_code=%d ret_msg=%s ext_code=%s", b.RetCode, b.RetMsg, b.ExtCode)
 }
 
 type OrdersResponse struct {
