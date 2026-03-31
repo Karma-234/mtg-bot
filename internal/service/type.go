@@ -7,16 +7,31 @@ import (
 	"time"
 )
 
-type OrdersResponse struct {
-	RetCode int    `json:"ret_code"`
-	RetMsg  string `json:"ret_msg"`
-	Result  struct {
-		Count int     `json:"count"`
-		Items []Order `json:"items"`
-	} `json:"result"`
+type BaseResponse struct {
+	RetCode int                    `json:"ret_code"`
+	RetMsg  string                 `json:"ret_msg"`
 	ExtCode string                 `json:"ext_code"`
 	ExtInfo map[string]interface{} `json:"ext_info"`
 	TimeNow string                 `json:"time_now"`
+}
+
+func (b BaseResponse) OK() bool {
+	return b.RetCode == 0
+}
+
+func (b BaseResponse) Error() error {
+	if b.OK() {
+		return nil
+	}
+	return fmt.Errorf("backend error ret_code=%d ret_msg=%s ext_code=%s", b.RetCode, b.RetMsg, b.ExtCode)
+}
+
+type OrdersResponse struct {
+	BaseResponse
+	Result struct {
+		Count int     `json:"count"`
+		Items []Order `json:"items"`
+	} `json:"result"`
 }
 
 type Order struct {

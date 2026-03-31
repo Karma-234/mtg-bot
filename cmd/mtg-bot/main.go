@@ -70,7 +70,7 @@ func main() {
 		log.Printf("Error setting commands: %v", err)
 	}
 	startButtonMarkup := &telebot.ReplyMarkup{}
-	fetcherBtn := startButtonMarkup.Data("Fetch latest MTG news", "fetch-news")
+	fetcherBtn := startButtonMarkup.Data("Bybit Agent", "bybit_fetcher")
 	startButtonMarkup.Inline(startButtonMarkup.Row(fetcherBtn))
 
 	taskDurationMarkup := &telebot.ReplyMarkup{}
@@ -86,7 +86,7 @@ func main() {
 		return ctx.Send("Hello, "+sender.Username+"!\n Here are the available services:\n\n", startButtonMarkup)
 	})
 	b.Handle(&fetcherBtn, func(ctx telebot.Context) error {
-		log.Printf("Received fetch news request from user %s ", ctx.Sender().Username)
+		log.Printf("Received Bybit Agent request from user %s ", ctx.Sender().Username)
 
 		ctx.Edit("Fetching latest MTG news...", &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
 		return ctx.Send("Here is the  latest MTG news...", &telebot.SendOptions{ReplyMarkup: taskDurationMarkup})
@@ -96,7 +96,7 @@ func main() {
 		return func(ctx telebot.Context) error {
 			log.Printf("Received task duration selection '%s' from user %s", duration.String(), ctx.Sender().Username)
 
-			ctx.Edit("You selected task duration: "+duration.String(), &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
+			ctx.Edit("You selected Bybit Agent for duration: "+duration.String(), &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
 			taskScheduler(b, duration, ctx.Chat(), taskManager, merchantService)
 
 			return ctx.Respond(&telebot.CallbackResponse{Text: "Task duration set to " + duration.String()})
