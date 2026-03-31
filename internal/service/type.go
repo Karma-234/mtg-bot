@@ -120,8 +120,9 @@ func FormatOrdersMessage(res *OrdersResponse) string {
 		fmt.Fprintf(&b, "*Order %d*\n", i+1)
 		fmt.Fprintf(&b, "🆔 ID: `%s`\n", shortID(o.ID))
 		fmt.Fprintf(&b, "📌 Side: %s\n", formatSide(o.Side))
+		fmt.Fprintf(&b, "💼 Tokens: %s %s\n", o.NotifyTokenQuantity, o.NotifyTokenID)
 		fmt.Fprintf(&b, "💰 Amount: %.2f %s\n", amount, o.TokenID)
-		fmt.Fprintf(&b, "💱 Price: %.3f %s\n", price, o.CurrencyID)
+		fmt.Fprintf(&b, "💱 Rate: %.3f %s\n", price, o.CurrencyID)
 		fmt.Fprintf(&b, "📍 Status: %s\n", formatStatus(o.Status))
 		fmt.Fprintf(&b, "⏱ Time: %s\n", t.Format("15:04:05"))
 
