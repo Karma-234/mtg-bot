@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -31,33 +30,10 @@ func main() {
 	flag.BoolVar(&dev, "dev", false, "Use development/testnet environment")
 
 	flag.Parse()
-	var merchantConfig *service.MerchantServiceConfig
-	switch {
-	case prod && dev:
-		log.Fatal("Cannot use both --prod and --dev flags at the same time")
-	case prod:
-		log.Println("Using production environment")
-		merchantConfig = service.NewMerchantServiceConfig("prod")
-	case dev:
-		log.Println("Using development/testnet environment")
-		merchantConfig = service.NewMerchantServiceConfig("dev")
-	default:
-		log.Println("No environment flag provided, defaulting to development/testnet environment")
-		merchantConfig = service.NewMerchantServiceConfig("dev")
-	}
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &service.RequestInterceptor{
-			Base:          http.DefaultTransport,
-			ServiceConfig: *merchantConfig,
-		}}
-	_ = client
-	merchantService := &service.MerchantService{Config: *merchantConfig, Client: *client}
-	pref := telebot.Settings{
-		Token:  apiKey,
-		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
-	}
+	merchantConfig := selectEnvironment(prod, dev)
+	client := buildHTTPClient(*merchantConfig)
+	merchantService := buildMerchantService(*merchantConfig, client)
+	pref := buildBotSettings(apiKey)
 	b, err := telebot.NewBot(pref)
 	if err != nil {
 		log.Fatalf("Failed to initialize bot: %v", err)
