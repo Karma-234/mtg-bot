@@ -58,14 +58,17 @@ func main() {
 		Token:  apiKey,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
 	}
-	b, _ := telebot.NewBot(pref)
+	b, err := telebot.NewBot(pref)
+	if err != nil {
+		log.Fatalf("Failed to initialize bot: %v", err)
+	}
 	taskManager := &TaskManager{tasks: make(map[int64]context.CancelFunc)}
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
-	cmdsn := []telebot.Command{
+	commands := []telebot.Command{
 		{Text: "start", Description: "Says Hello to the user"},
 	}
-	err := b.SetCommands(cmdsn)
+	err = b.SetCommands(commands)
 	if err != nil {
 		log.Printf("Error setting commands: %v", err)
 	}
@@ -88,7 +91,9 @@ func main() {
 	b.Handle(&fetcherBtn, func(ctx telebot.Context) error {
 		log.Printf("Received Bybit Agent request from user %s ", ctx.Sender().Username)
 
-		ctx.Edit("Fetching latest MTG news...", &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
+		if err := ctx.Edit("Fetching latest MTG news...", &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}}); err != nil {
+			log.Printf("Failed to edit message for user %s: %v", ctx.Sender().Username, err)
+		}
 		return ctx.Send("Here is the  latest MTG news...", &telebot.SendOptions{ReplyMarkup: taskDurationMarkup})
 	})
 
@@ -96,15 +101,21 @@ func main() {
 		return func(ctx telebot.Context) error {
 			log.Printf("Received task duration selection '%s' from user %s", duration.String(), ctx.Sender().Username)
 
-			ctx.Edit("You selected Bybit Agent for duration: "+duration.String(), &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}})
+			if err := ctx.Edit("You selected Bybit Agent for duration: "+duration.String(), &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}}); err != nil {
+				log.Printf("Failed to edit duration selection for user %s: %v", ctx.Sender().Username, err)
+			}
 			taskScheduler(b, duration, ctx.Chat(), taskManager, merchantService)
 
-			return ctx.Respond(&telebot.CallbackResponse{Text: "Task duration set to " + duration.String()})
+			if err := ctx.Respond(&telebot.CallbackResponse{Text: "Task duration set to " + duration.String()}); err != nil {
+				log.Printf("Failed to send callback response to user %s: %v", ctx.Sender().Username, err)
+				return err
+			}
+			return nil
 		}
 	}
-	b.Handle(&setTask1hDurationBtn, durationHandler(1*time.Minute))
-	b.Handle(&setTask3hDurationBtn, durationHandler(3*time.Minute))
-	b.Handle(&setTask6hDurationBtn, durationHandler(6*time.Minute))
+	b.Handle(&setTask1hDurationBtn, durationHandler(1*time.Hour))
+	b.Handle(&setTask3hDurationBtn, durationHandler(3*time.Hour))
+	b.Handle(&setTask6hDurationBtn, durationHandler(6*time.Hour))
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
@@ -150,14 +161,18 @@ func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, t
 				resp, err := srv.GetLatestOrders(nil)
 				if err != nil {
 					log.Printf("Failed to get Orders to : %v", err)
-					b.Send(chat, "Failed to fetch orders\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount))
+					if _, sendErr := b.Send(chat, "Failed to fetch orders\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount)); sendErr != nil {
+						log.Printf("Error sending fetch failure message to chat %d: %v", chat.ID, sendErr)
+					}
 					continue
 				}
 				if !resp.OK() {
 					log.Printf("Error from merchant: %v", resp.Error())
 				}
 				msg := service.FormatOrdersMessage(resp)
-				b.Send(chat, "Here is the latest MTG news...\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount)+"\n\n"+msg)
+				if _, sendErr := b.Send(chat, "Here is the latest MTG news...\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount)+"\n\n"+msg); sendErr != nil {
+					log.Printf("Error sending periodic update to chat %d: %v", chat.ID, sendErr)
+				}
 			case <-ctx.Done():
 				log.Printf("Task for chat %v Completed", chat.Username)
 				if _, err := b.Send(chat, "Task for user "+chat.Username+" completed"); err != nil {
