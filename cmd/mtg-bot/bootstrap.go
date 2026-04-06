@@ -15,13 +15,25 @@ func selectEnvironment(prod, dev bool) *service.MerchantServiceConfig {
 		log.Fatal("Cannot use both --prod and --dev flags at the same time")
 	case prod:
 		log.Println("Using production environment")
-		return service.NewMerchantServiceConfig("prod")
+		cfg, err := service.NewMerchantServiceConfig("prod")
+		if err != nil {
+			log.Fatalf("Failed to load production merchant config: %v", err)
+		}
+		return cfg
 	case dev:
 		log.Println("Using development/testnet environment")
-		return service.NewMerchantServiceConfig("dev")
+		cfg, err := service.NewMerchantServiceConfig("dev")
+		if err != nil {
+			log.Fatalf("Failed to load development merchant config: %v", err)
+		}
+		return cfg
 	default:
 		log.Println("No environment flag provided, defaulting to development/testnet environment")
-		return service.NewMerchantServiceConfig("dev")
+		cfg, err := service.NewMerchantServiceConfig("dev")
+		if err != nil {
+			log.Fatalf("Failed to load default merchant config: %v", err)
+		}
+		return cfg
 	}
 
 	return nil

@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 )
@@ -12,12 +13,12 @@ type MerchantServiceConfig struct {
 	BaseURL   string
 }
 
-func NewMerchantServiceConfig(e string) *MerchantServiceConfig {
+func NewMerchantServiceConfig(e string) (*MerchantServiceConfig, error) {
 	apiKey := os.Getenv("BBT_KEY")
 	apiSecret := os.Getenv("BBT_SECRET")
 	baseURLProd := os.Getenv("BBT_BASE_URL_PROD")
 	if apiKey == "" || apiSecret == "" || os.Getenv("BBT_BASE_URL") == "" || baseURLProd == "" {
-		panic("BBT_KEY and BBT_SECRET must be set in environment variables")
+		return nil, fmt.Errorf("BBT_KEY and BBT_SECRET must be set in environment variables")
 	}
 	if e == "prod" {
 
@@ -25,14 +26,14 @@ func NewMerchantServiceConfig(e string) *MerchantServiceConfig {
 			APIKey:    apiKey,
 			APISecret: apiSecret,
 			BaseURL:   baseURLProd,
-		}
+		}, nil
 	}
 	baseURL := os.Getenv("BBT_BASE_URL")
 	return &MerchantServiceConfig{
 		APIKey:    apiKey,
 		APISecret: apiSecret,
 		BaseURL:   baseURL,
-	}
+	}, nil
 }
 
 type MerchantService struct {
