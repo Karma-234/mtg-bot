@@ -1,24 +1,16 @@
 package main
 
 import (
-	"context"
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/karma-234/mtg-bot/internal/service"
+	"github.com/karma-234/mtg-bot/internal/botruntime"
 	"gopkg.in/telebot.v4"
 )
-
-type TaskManager struct {
-	tasks   map[int64]context.CancelFunc
-	tasksMu sync.RWMutex
-}
 
 func main() {
 	apiKey := os.Getenv("TG_BOT_API_KEY")
@@ -38,7 +30,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize bot: %v", err)
 	}
-	taskManager := &TaskManager{tasks: make(map[int64]context.CancelFunc)}
+	taskManager := botruntime.NewTaskManager()
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
 	commands := []telebot.Command{
@@ -80,7 +72,7 @@ func main() {
 			if err := ctx.Edit("You selected Bybit Agent for duration: "+duration.String(), &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}}); err != nil {
 				log.Printf("Failed to edit duration selection for user %s: %v", ctx.Sender().Username, err)
 			}
-			taskScheduler(b, duration, ctx.Chat(), taskManager, merchantService)
+			taskManager.Schedule(b, duration, ctx.Chat(), merchantService)
 
 			if err := ctx.Respond(&telebot.CallbackResponse{Text: "Task duration set to " + duration.String()}); err != nil {
 				log.Printf("Failed to send callback response to user %s: %v", ctx.Sender().Username, err)
@@ -102,61 +94,6 @@ func main() {
 	}()
 	<-done
 	b.Stop()
-	for chatID, cancel := range taskManager.tasks {
-		cancel()
-		log.Printf("Cancelled task for chat %d", chatID)
-	}
+	taskManager.StopAll()
 	log.Println("Bot stopped")
-}
-
-func taskScheduler(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, taskManager *TaskManager, srv *service.MerchantService) {
-	taskManager.tasksMu.Lock()
-	if cancel, exists := taskManager.tasks[chat.ID]; exists {
-		cancel()
-		log.Printf("Existing task for chat %d cancelled", chat.ID)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), duration)
-	taskManager.tasks[chat.ID] = cancel
-	taskManager.tasksMu.Unlock()
-
-	go func() {
-		ticker := time.NewTicker(15 * time.Second)
-		defer func() {
-			ticker.Stop()
-			taskManager.tasksMu.Lock()
-			delete(taskManager.tasks, chat.ID)
-			taskManager.tasksMu.Unlock()
-			log.Printf("Task for chat %d completed or cancelled", chat.ID)
-		}()
-
-		messageCount := 1
-		for {
-			select {
-			case t := <-ticker.C:
-				log.Printf("Executing scheduled task for chat %s", chat.Username)
-				resp, err := srv.GetLatestOrders(nil)
-				if err != nil {
-					log.Printf("Failed to get Orders to : %v", err)
-					if _, sendErr := b.Send(chat, "Failed to fetch orders\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount)); sendErr != nil {
-						log.Printf("Error sending fetch failure message to chat %d: %v", chat.ID, sendErr)
-					}
-					continue
-				}
-				if !resp.OK() {
-					log.Printf("Error from merchant: %v", resp.Error())
-				}
-				msg := service.FormatOrdersMessage(resp)
-				if _, sendErr := b.Send(chat, "Here is the latest MTG news...\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount)+"\n\n"+msg); sendErr != nil {
-					log.Printf("Error sending periodic update to chat %d: %v", chat.ID, sendErr)
-				}
-			case <-ctx.Done():
-				log.Printf("Task for chat %v Completed", chat.Username)
-				if _, err := b.Send(chat, "Task for user "+chat.Username+" completed"); err != nil {
-					log.Printf("Error sending completion message to chat %d: %v", chat.ID, err)
-				}
-				return
-			}
-			messageCount++
-		}
-	}()
 }
