@@ -1,10 +1,12 @@
 package bothandlers
 
 import (
+	"context"
 	"log"
 	"time"
 
 	"github.com/karma-234/mtg-bot/internal/botruntime"
+	"github.com/karma-234/mtg-bot/internal/cache"
 	"github.com/karma-234/mtg-bot/internal/service"
 	"gopkg.in/telebot.v4"
 )
@@ -33,7 +35,13 @@ func BuildDurationMarkup() (*telebot.ReplyMarkup, DurationButtons) {
 	return markup, buttons
 }
 
-func RegisterHandlers(b *telebot.Bot, taskManager *botruntime.TaskManager, merchantService *service.MerchantService) {
+func RegisterHandlers(
+	b *telebot.Bot,
+	taskManager *botruntime.TaskManager,
+	merchantService *service.MerchantService,
+	userStateCache cache.UserStateCache,
+	ordersCache cache.OrdersCache,
+) {
 	startMarkup, fetcherBtn := BuildStartMarkup()
 	durationMarkup, durationButtons := BuildDurationMarkup()
 
@@ -54,10 +62,15 @@ func RegisterHandlers(b *telebot.Bot, taskManager *botruntime.TaskManager, merch
 	durationHandler := func(duration time.Duration) telebot.HandlerFunc {
 		return func(ctx telebot.Context) error {
 			log.Printf("Received task duration selection '%s' from user %s", duration.String(), ctx.Sender().Username)
+			if userStateCache != nil {
+				if err := userStateCache.SetSelectedDuration(context.Background(), ctx.Chat().ID, duration, 24*time.Hour); err != nil {
+					log.Printf("Failed to persist duration for chat %d: %v", ctx.Chat().ID, err)
+				}
+			}
 			if err := ctx.Edit("You selected Bybit Agent for duration: "+duration.String(), &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}}); err != nil {
 				log.Printf("Failed to edit duration selection for user %s: %v", ctx.Sender().Username, err)
 			}
-			taskManager.Schedule(b, duration, ctx.Chat(), merchantService)
+			taskManager.Schedule(b, duration, ctx.Chat(), merchantService, ordersCache)
 			if err := ctx.Respond(&telebot.CallbackResponse{Text: "Task duration set to " + duration.String()}); err != nil {
 				log.Printf("Failed to send callback response to user %s: %v", ctx.Sender().Username, err)
 				return err

@@ -25,6 +25,10 @@ func main() {
 	merchantConfig := selectEnvironment(prod, dev)
 	client := buildHTTPClient(*merchantConfig)
 	merchantService := buildMerchantService(*merchantConfig, client)
+	redisConfig := buildRedisConfigFromEnv()
+	rdb := buildRedisClient(redisConfig)
+	ordersCache := buildOrdersCache(rdb)
+	userStateCache := buildUserStateCache(rdb)
 	pref := buildBotSettings(apiKey)
 	b, err := telebot.NewBot(pref)
 	if err != nil {
@@ -40,7 +44,7 @@ func main() {
 	if err != nil {
 		log.Printf("Error setting commands: %v", err)
 	}
-	bothandlers.RegisterHandlers(b, taskManager, merchantService)
+	bothandlers.RegisterHandlers(b, taskManager, merchantService, userStateCache, ordersCache)
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)

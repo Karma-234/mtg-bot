@@ -7,9 +7,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/karma-234/mtg-bot/internal/cache"
 	"github.com/karma-234/mtg-bot/internal/service"
 	"gopkg.in/telebot.v4"
 )
+
+type MerchantOrdersProvider interface {
+	GetPendingOrders(opts *service.OrderQueryRequest) (*service.OrdersResponse, error)
+}
 
 type TaskManager struct {
 	tasks map[int64]context.CancelFunc
@@ -20,7 +25,7 @@ func NewTaskManager() *TaskManager {
 	return &TaskManager{tasks: make(map[int64]context.CancelFunc)}
 }
 
-func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, srv *service.MerchantService) {
+func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, srv MerchantOrdersProvider, ordersCache cache.OrdersCache) {
 	m.mu.Lock()
 	if cancel, exists := m.tasks[chat.ID]; exists {
 		cancel()
@@ -32,6 +37,7 @@ func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *tel
 
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
+		cacheTTL := 30 * time.Second
 		defer func() {
 			ticker.Stop()
 			m.mu.Lock()
@@ -45,7 +51,26 @@ func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *tel
 			select {
 			case t := <-ticker.C:
 				log.Printf("Executing scheduled task for chat %s", chat.Username)
-				resp, err := srv.GetPendingOrders(nil)
+
+				var (
+					resp *service.OrdersResponse
+					err  error
+				)
+
+				if ordersCache != nil {
+					cachedResp, found, cacheErr := ordersCache.GetLatestOrders(ctx, chat.ID)
+					if cacheErr != nil {
+						log.Printf("Orders cache read failed for chat %d: %v", chat.ID, cacheErr)
+					} else if found {
+						resp = cachedResp
+						log.Printf("Orders cache hit for chat %d", chat.ID)
+					}
+				}
+
+				if resp == nil {
+					resp, err = srv.GetPendingOrders(nil)
+				}
+
 				if err != nil {
 					log.Printf("Failed to get Orders to : %v", err)
 					if _, sendErr := b.Send(chat, "Failed to fetch orders\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount)); sendErr != nil {
@@ -53,6 +78,13 @@ func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *tel
 					}
 					continue
 				}
+
+				if ordersCache != nil {
+					if cacheErr := ordersCache.SetLatestOrders(ctx, chat.ID, resp, cacheTTL); cacheErr != nil {
+						log.Printf("Orders cache write failed for chat %d: %v", chat.ID, cacheErr)
+					}
+				}
+
 				if !resp.OK() {
 					log.Printf("Error from merchant: %v", resp.Error())
 				}

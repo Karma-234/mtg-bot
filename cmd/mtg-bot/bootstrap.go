@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
+	"github.com/karma-234/mtg-bot/internal/cache"
+	redisinfra "github.com/karma-234/mtg-bot/internal/redis"
 	"github.com/karma-234/mtg-bot/internal/service"
+	"github.com/redis/go-redis/v9"
 	"gopkg.in/telebot.v4"
 )
 
@@ -68,9 +73,41 @@ type RedisConfig struct {
 }
 
 func buildRedisConfigFromEnv() RedisConfig {
+	db := 0
+	if rawDB := os.Getenv("REDIS_DB"); rawDB != "" {
+		parsedDB, err := strconv.Atoi(rawDB)
+		if err != nil {
+			log.Printf("Invalid REDIS_DB value %q; defaulting to 0", rawDB)
+		} else {
+			db = parsedDB
+		}
+	}
+
 	return RedisConfig{
 		Addr:     os.Getenv("REDIS_ADDR"),
 		Password: os.Getenv("REDIS_PASSWORD"),
-		DB:       0,
+		DB:       db,
 	}
+}
+
+func buildRedisClient(cfg RedisConfig) *redis.Client {
+	client := redisinfra.NewClient(redisinfra.Config{
+		Addr:     cfg.Addr,
+		Password: cfg.Password,
+		DB:       cfg.DB,
+	})
+
+	if err := redisinfra.Ping(context.Background(), client); err != nil {
+		log.Printf("Redis ping failed: %v", err)
+	}
+
+	return client
+}
+
+func buildOrdersCache(rdb *redis.Client) cache.OrdersCache {
+	return cache.NewRedisOrdersCache(rdb)
+}
+
+func buildUserStateCache(rdb *redis.Client) cache.UserStateCache {
+	return cache.NewRedisUserStateCache(rdb)
 }
