@@ -66,7 +66,7 @@ func RegisterHandlers(b *telebot.Bot, taskManager *botruntime.TaskManager, merch
 		}
 	}
 
-	b.Handle(&durationButtons.OneHour, durationHandler(1*time.Hour))
-	b.Handle(&durationButtons.ThreeHours, durationHandler(3*time.Hour))
-	b.Handle(&durationButtons.SixHours, durationHandler(6*time.Hour))
+	b.Handle(&durationButtons.OneHour, durationHandler(1*time.Minute))
+	b.Handle(&durationButtons.ThreeHours, durationHandler(3*time.Minute))
+	b.Handle(&durationButtons.SixHours, durationHandler(6*time.Minute))
 }

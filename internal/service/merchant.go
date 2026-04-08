@@ -67,13 +67,14 @@ func (s *MerchantService) GetLatestOrders(opts *OrderQueryRequest) (*OrdersRespo
 
 func (s *MerchantService) GetPendingOrders(opts *OrderQueryRequest) (*OrdersResponse, error) {
 	url := s.Config.BaseURL + GETPENDINGORDERS
-
+	orderSide := 0
 	if opts == nil {
 		status := 10
 		opts = &OrderQueryRequest{
 			Page:     1,
 			PageSize: 30,
 			Status:   &status,
+			Side:     &orderSide,
 		}
 	}
 

@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/karma-234/mtg-bot/internal/service"
@@ -57,5 +58,19 @@ func buildBotSettings(apiKey string) telebot.Settings {
 	return telebot.Settings{
 		Token:  apiKey,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
+	}
+}
+
+type RedisConfig struct {
+	Addr     string
+	Password string
+	DB       int
+}
+
+func buildRedisConfigFromEnv() RedisConfig {
+	return RedisConfig{
+		Addr:     os.Getenv("REDIS_ADDR"),
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       0,
 	}
 }

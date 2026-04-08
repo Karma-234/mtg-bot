@@ -34,7 +34,7 @@ func main() {
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
 	commands := []telebot.Command{
-		{Text: "start", Description: "Says Hello to the user"},
+		{Text: "start", Description: "Start the bot and see available services"},
 	}
 	err = b.SetCommands(commands)
 	if err != nil {

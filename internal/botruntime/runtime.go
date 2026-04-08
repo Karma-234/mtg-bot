@@ -45,7 +45,7 @@ func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *tel
 			select {
 			case t := <-ticker.C:
 				log.Printf("Executing scheduled task for chat %s", chat.Username)
-				resp, err := srv.GetLatestOrders(nil)
+				resp, err := srv.GetPendingOrders(nil)
 				if err != nil {
 					log.Printf("Failed to get Orders to : %v", err)
 					if _, sendErr := b.Send(chat, "Failed to fetch orders\n"+"TimeStamp"+t.Format("15:04:05")+"\n"+"Message count:"+fmt.Sprint(messageCount)); sendErr != nil {
