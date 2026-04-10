@@ -12,6 +12,14 @@ type OrdersCache interface {
 	SetLatestOrders(ctx context.Context, chatID int64, data *service.OrdersResponse, ttl time.Duration) error
 }
 
+type WorkflowStore interface {
+	CreateIfAbsent(ctx context.Context, record *service.OrderWorkflowRecord) (bool, error)
+	Get(ctx context.Context, orderID string) (*service.OrderWorkflowRecord, bool, error)
+	Save(ctx context.Context, record *service.OrderWorkflowRecord) error
+	SaveIfState(ctx context.Context, record *service.OrderWorkflowRecord, expectedState service.OrderState) (bool, error)
+	ListByChat(ctx context.Context, chatID int64) ([]*service.OrderWorkflowRecord, error)
+}
+
 type UserStateCache interface {
 	SetSelectedDuration(ctx context.Context, chatID int64, d time.Duration, ttl time.Duration) error
 	GetSelectedDuration(ctx context.Context, chatID int64) (time.Duration, bool, error)

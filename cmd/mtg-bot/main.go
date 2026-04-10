@@ -28,13 +28,15 @@ func main() {
 	redisConfig := buildRedisConfigFromEnv()
 	rdb := buildRedisClient(redisConfig)
 	ordersCache := buildOrdersCache(rdb)
+	workflowStore := buildWorkflowStore(rdb)
 	userStateCache := buildUserStateCache(rdb)
+	retryPolicy := buildRetryPolicy()
 	pref := buildBotSettings(apiKey)
 	b, err := telebot.NewBot(pref)
 	if err != nil {
 		log.Fatalf("Failed to initialize bot: %v", err)
 	}
-	taskManager := botruntime.NewTaskManager()
+	taskManager := botruntime.NewTaskManager(workflowStore, retryPolicy)
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
 	commands := []telebot.Command{

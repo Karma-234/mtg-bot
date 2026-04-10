@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/karma-234/mtg-bot/internal/botruntime"
 	"github.com/karma-234/mtg-bot/internal/cache"
 	redisinfra "github.com/karma-234/mtg-bot/internal/redis"
 	"github.com/karma-234/mtg-bot/internal/service"
@@ -108,6 +109,14 @@ func buildOrdersCache(rdb *redis.Client) cache.OrdersCache {
 	return cache.NewRedisOrdersCache(rdb)
 }
 
+func buildWorkflowStore(rdb *redis.Client) cache.WorkflowStore {
+	return cache.NewRedisWorkflowStore(rdb)
+}
+
 func buildUserStateCache(rdb *redis.Client) cache.UserStateCache {
 	return cache.NewRedisUserStateCache(rdb)
+}
+
+func buildRetryPolicy() botruntime.RetryPolicy {
+	return botruntime.DefaultRetryPolicy()
 }

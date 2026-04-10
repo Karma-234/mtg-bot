@@ -93,7 +93,7 @@ func (s *MerchantService) GetPendingOrders(opts *OrderQueryRequest) (*OrdersResp
 	return &result, nil
 }
 
-func (s *MerchantService) GetOrderDetail(opts SingleOrderQueryRequest) (*http.Response, error) {
+func (s *MerchantService) GetOrderDetail(opts SingleOrderQueryRequest) (*OrderDetailResponse, error) {
 	url := s.Config.BaseURL + GETORDERDETAIL
 	res, err := PostJSON(&s.Client, url, opts)
 	if err != nil {
@@ -101,7 +101,16 @@ func (s *MerchantService) GetOrderDetail(opts SingleOrderQueryRequest) (*http.Re
 	}
 	defer res.Body.Close()
 
-	return res, err
+	var result OrderDetailResponse
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	if err := result.Error(); err != nil {
+		return nil, err
+	}
+
+	return &result, nil
 }
 
 func (s *MerchantService) MarkOrderPaid(opts MarkOrderPaidRequest) (*http.Response, error) {
@@ -110,6 +119,5 @@ func (s *MerchantService) MarkOrderPaid(opts MarkOrderPaidRequest) (*http.Respon
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
 	return res, err
 }
