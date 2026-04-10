@@ -53,10 +53,8 @@ func RegisterHandlers(
 
 	b.Handle(&fetcherBtn, func(ctx telebot.Context) error {
 		log.Printf("Received Bybit Agent request from user %s ", ctx.Sender().Username)
-		if err := ctx.Edit("Fetching latest MTG news...", &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}}); err != nil {
-			log.Printf("Failed to edit message for user %s: %v", ctx.Sender().Username, err)
-		}
-		return ctx.Send("Here is the  latest MTG news...", &telebot.SendOptions{ReplyMarkup: durationMarkup})
+
+		return ctx.Send("You selected Bybit Agent. Please choose a duration:", &telebot.SendOptions{ReplyMarkup: durationMarkup})
 	})
 
 	durationHandler := func(duration time.Duration) telebot.HandlerFunc {
