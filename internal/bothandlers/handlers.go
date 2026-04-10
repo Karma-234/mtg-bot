@@ -70,7 +70,7 @@ func RegisterHandlers(
 			if err := ctx.Edit("You selected Bybit Agent for duration: "+duration.String(), &telebot.SendOptions{ReplyMarkup: &telebot.ReplyMarkup{}}); err != nil {
 				log.Printf("Failed to edit duration selection for user %s: %v", ctx.Sender().Username, err)
 			}
-			taskManager.Schedule(b, duration, ctx.Chat(), merchantService, ordersCache)
+			taskManager.Schedule(b, duration, ctx.Chat(), "bybit", merchantService, ordersCache)
 			if err := ctx.Respond(&telebot.CallbackResponse{Text: "Task duration set to " + duration.String()}); err != nil {
 				log.Printf("Failed to send callback response to user %s: %v", ctx.Sender().Username, err)
 				return err

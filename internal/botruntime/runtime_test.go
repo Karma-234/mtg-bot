@@ -229,3 +229,79 @@ func TestPollAndProcess_SkipsResumeForSeenOrders(t *testing.T) {
 		t.Fatalf("stored bank name = %s, want %s", stored.BankName, "MyBank")
 	}
 }
+
+func TestSchedule_ExistingSameProviderDoesNotReplaceTask(t *testing.T) {
+	now := time.Now().UTC()
+	store := newMockWorkflowStore()
+	manager := NewTaskManager(store, DefaultRetryPolicy())
+	manager.now = func() time.Time { return now }
+
+	chat := &telebot.Chat{ID: 88, Username: "same-provider"}
+	existingCanceled := false
+	existingTask := scheduledTask{
+		id:       7,
+		cancel:   func() { existingCanceled = true },
+		provider: "bybit",
+		deadline: now.Add(2 * time.Minute),
+	}
+	manager.tasks[chat.ID] = existingTask
+	manager.nextTaskID = 7
+
+	manager.Schedule(nil, 5*time.Minute, chat, "bybit", nil, nil)
+
+	if existingCanceled {
+		t.Fatalf("existing task cancel callback should not be called")
+	}
+
+	storedTask, ok := manager.tasks[chat.ID]
+	if !ok {
+		t.Fatalf("existing task should remain in task map")
+	}
+	if storedTask.id != existingTask.id {
+		t.Fatalf("task id changed from %d to %d", existingTask.id, storedTask.id)
+	}
+	if storedTask.provider != existingTask.provider {
+		t.Fatalf("task provider changed from %s to %s", existingTask.provider, storedTask.provider)
+	}
+	if !storedTask.deadline.Equal(existingTask.deadline) {
+		t.Fatalf("task deadline changed from %s to %s", existingTask.deadline, storedTask.deadline)
+	}
+}
+
+func TestSchedule_ExistingDifferentProviderDoesNotReplaceTask(t *testing.T) {
+	now := time.Now().UTC()
+	store := newMockWorkflowStore()
+	manager := NewTaskManager(store, DefaultRetryPolicy())
+	manager.now = func() time.Time { return now }
+
+	chat := &telebot.Chat{ID: 99, Username: "different-provider"}
+	existingCanceled := false
+	existingTask := scheduledTask{
+		id:       9,
+		cancel:   func() { existingCanceled = true },
+		provider: "bybit",
+		deadline: now.Add(3 * time.Minute),
+	}
+	manager.tasks[chat.ID] = existingTask
+	manager.nextTaskID = 9
+
+	manager.Schedule(nil, 10*time.Minute, chat, "binance", nil, nil)
+
+	if existingCanceled {
+		t.Fatalf("existing task cancel callback should not be called")
+	}
+
+	storedTask, ok := manager.tasks[chat.ID]
+	if !ok {
+		t.Fatalf("existing task should remain in task map")
+	}
+	if storedTask.id != existingTask.id {
+		t.Fatalf("task id changed from %d to %d", existingTask.id, storedTask.id)
+	}
+	if storedTask.provider != existingTask.provider {
+		t.Fatalf("task provider changed from %s to %s", existingTask.provider, storedTask.provider)
+	}
+	if !storedTask.deadline.Equal(existingTask.deadline) {
+		t.Fatalf("task deadline changed from %s to %s", existingTask.deadline, storedTask.deadline)
+	}
+}

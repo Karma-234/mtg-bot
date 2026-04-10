@@ -21,8 +21,16 @@ type MerchantOrdersProvider interface {
 	GetOrderDetail(opts service.SingleOrderQueryRequest) (*service.OrderDetailResponse, error)
 }
 
+type scheduledTask struct {
+	id       uint64
+	cancel   context.CancelFunc
+	provider string
+	deadline time.Time
+}
+
 type TaskManager struct {
-	tasks         map[int64]context.CancelFunc
+	tasks         map[int64]scheduledTask
+	nextTaskID    uint64
 	processing    map[string]struct{}
 	workflowStore cache.WorkflowStore
 	retryPolicy   RetryPolicy
@@ -32,7 +40,7 @@ type TaskManager struct {
 
 func NewTaskManager(workflowStore cache.WorkflowStore, retryPolicy RetryPolicy) *TaskManager {
 	return &TaskManager{
-		tasks:         make(map[int64]context.CancelFunc),
+		tasks:         make(map[int64]scheduledTask),
 		processing:    make(map[string]struct{}),
 		workflowStore: workflowStore,
 		retryPolicy:   retryPolicy,
@@ -40,14 +48,36 @@ func NewTaskManager(workflowStore cache.WorkflowStore, retryPolicy RetryPolicy) 
 	}
 }
 
-func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, srv MerchantOrdersProvider, ordersCache cache.OrdersCache) {
+func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, provider string, srv MerchantOrdersProvider, ordersCache cache.OrdersCache) {
+	now := m.now()
+
 	m.mu.Lock()
-	if cancel, exists := m.tasks[chat.ID]; exists {
-		cancel()
-		log.Printf("Existing task for chat %d cancelled", chat.ID)
+	if existing, exists := m.tasks[chat.ID]; exists {
+		remaining := max(existing.deadline.Sub(now), 0)
+		existingProvider := existing.provider
+		m.mu.Unlock()
+
+		messageProvider := existingProvider
+		if existingProvider == provider {
+			messageProvider = provider
+		}
+		if b != nil {
+			if _, err := b.Send(chat, fmt.Sprintf("You already have an active %s task running.\nTime left: %s", messageProvider, remaining.Round(time.Second))); err != nil {
+				log.Printf("Error sending active-task warning to chat %d: %v", chat.ID, err)
+			}
+		}
+		return
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
-	m.tasks[chat.ID] = cancel
+	m.nextTaskID++
+	taskID := m.nextTaskID
+	m.tasks[chat.ID] = scheduledTask{
+		id:       taskID,
+		cancel:   cancel,
+		provider: provider,
+		deadline: now.Add(duration),
+	}
 	m.mu.Unlock()
 
 	go func() {
@@ -56,7 +86,9 @@ func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *tel
 		defer func() {
 			ticker.Stop()
 			m.mu.Lock()
-			delete(m.tasks, chat.ID)
+			if current, ok := m.tasks[chat.ID]; ok && current.id == taskID {
+				delete(m.tasks, chat.ID)
+			}
 			m.mu.Unlock()
 			log.Printf("Task for chat %d completed or cancelled", chat.ID)
 		}()
@@ -435,8 +467,8 @@ func (m *TaskManager) StopAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for chatID, cancel := range m.tasks {
-		cancel()
+	for chatID, task := range m.tasks {
+		task.cancel()
 		log.Printf("Cancelled task for chat %d", chatID)
 	}
 }
