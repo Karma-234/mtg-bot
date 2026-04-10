@@ -131,3 +131,180 @@ func FormatOrdersMessage(res *OrdersResponse) string {
 
 	return b.String()
 }
+
+type OrderDetailResponse struct {
+	BaseResponse
+	Result OrderDetail `json:"result"`
+}
+
+type OrderDetail struct {
+	ID                             string         `json:"id"`
+	Side                           int            `json:"side"`
+	ItemID                         string         `json:"itemId"`
+	AccountID                      string         `json:"accountId"`
+	UserID                         string         `json:"userId"`
+	NickName                       string         `json:"nickName"`
+	MakerUserID                    string         `json:"makerUserId"`
+	TargetAccountID                string         `json:"targetAccountId"`
+	TargetUserID                   string         `json:"targetUserId"`
+	TargetNickName                 string         `json:"targetNickName"`
+	TargetFirstName                string         `json:"targetFirstName"`
+	TargetSecondName               string         `json:"targetSecondName"`
+	TargetUserAuthStatus           int            `json:"targetUserAuthStatus"`
+	TargetConnectInformation       string         `json:"targetConnectInformation"`
+	PayerRealName                  string         `json:"payerRealName"`
+	SellerRealName                 string         `json:"sellerRealName"`
+	BuyerRealName                  string         `json:"buyerRealName"`
+	TokenID                        string         `json:"tokenId"`
+	TokenName                      string         `json:"tokenName"`
+	CurrencyID                     string         `json:"currencyId"`
+	Price                          string         `json:"price"`
+	Quantity                       string         `json:"quantity"`
+	Amount                         string         `json:"amount"`
+	PayCode                        string         `json:"payCode"`
+	PaymentType                    int            `json:"paymentType"`
+	TransferDate                   string         `json:"transferDate"`
+	Status                         int            `json:"status"`
+	CreateDate                     string         `json:"createDate"`
+	PaymentTermList                []PaymentTerm  `json:"paymentTermList"`
+	Remark                         string         `json:"remark"`
+	TransferLastSeconds            string         `json:"transferLastSeconds"`
+	RecentOrderNum                 int            `json:"recentOrderNum"`
+	RecentExecuteRate              int            `json:"recentExecuteRate"`
+	AppealLastSeconds              string         `json:"appealLastSeconds"`
+	AppealContent                  string         `json:"appealContent"`
+	AppealType                     int            `json:"appealType"`
+	AppealNickName                 string         `json:"appealNickName"`
+	CanAppeal                      string         `json:"canAppeal"`
+	TotalAppealTimes               string         `json:"totalAppealTimes"`
+	AppealedTimes                  string         `json:"appealedTimes"`
+	PaymentTermResult              PaymentTerm    `json:"paymentTermResult"`
+	OrderFinishMinute              int            `json:"orderFinishMinute"`
+	ConfirmedPayTerm               PaymentTerm    `json:"confirmedPayTerm"`
+	MakerFee                       string         `json:"makerFee"`
+	TakerFee                       string         `json:"takerFee"`
+	Fee                            string         `json:"fee"`
+	ShowContact                    bool           `json:"showContact"`
+	ContactInfo                    []any          `json:"contactInfo"`
+	TokenBalance                   string         `json:"tokenBalance"`
+	FiatBalance                    string         `json:"fiatBalance"`
+	UnreadMsgCount                 string         `json:"unreadMsgCount"`
+	UpdateDate                     string         `json:"updateDate"`
+	Extension                      OrderExtension `json:"extension"`
+	SelfUnreadMsgCount             string         `json:"selfUnreadMsgCount"`
+	JudgeType                      string         `json:"judgeType"`
+	CanReport                      bool           `json:"canReport"`
+	CanReportDisagree              bool           `json:"canReportDisagree"`
+	CanReportType                  []string       `json:"canReportType"`
+	CanReportDisagreeType          []any          `json:"canReportDisagreeType"`
+	AppraiseStatus                 string         `json:"appraiseStatus"`
+	AppraiseInfo                   AppraiseInfo   `json:"appraiseInfo"`
+	CanReportDisagreeTypes         []any          `json:"canReportDisagreeTypes"`
+	CanReportTypes                 []string       `json:"canReportTypes"`
+	OrderType                      string         `json:"orderType"`
+	MiddleToken                    string         `json:"middleToken"`
+	BeforePrice                    string         `json:"beforePrice"`
+	BeforeQuantity                 string         `json:"beforeQuantity"`
+	BeforeToken                    string         `json:"beforeToken"`
+	Alternative                    string         `json:"alternative"`
+	AppealUserID                   string         `json:"appealUserId"`
+	NotifyTokenID                  string         `json:"notifyTokenId"`
+	NotifyTokenQuantity            string         `json:"notifyTokenQuantity"`
+	CancelResponsible              string         `json:"cancelResponsible"`
+	ChainType                      string         `json:"chainType"`
+	ChainAddress                   string         `json:"chainAddress"`
+	TradeHashCode                  string         `json:"tradeHashCode"`
+	EstimatedGasFee                string         `json:"estimatedGasFee"`
+	GasFeeTokenID                  string         `json:"gasFeeTokenId"`
+	TradingFeeTokenID              string         `json:"tradingFeeTokenId"`
+	OnChainInfo                    string         `json:"onChainInfo"`
+	TransactionID                  string         `json:"transactionId"`
+	DisplayRefund                  string         `json:"displayRefund"`
+	ChainWithdrawLastSeconds       string         `json:"chainWithdrawLastSeconds"`
+	ChainTransferLastSeconds       string         `json:"chainTransferLastSeconds"`
+	OrderSource                    string         `json:"orderSource"`
+	CancelReason                   string         `json:"cancelReason"`
+	SellerCancelExamineRemainTime  string         `json:"sellerCancelExamineRemainTime"`
+	NeedSellerExamineCancel        bool           `json:"needSellerExamineCancel"`
+	CouponCurrencyAmount           string         `json:"couponCurrencyAmount"`
+	TotalCurrencyAmount            string         `json:"totalCurrencyAmount"`
+	UsedCoupon                     bool           `json:"usedCoupon"`
+	CouponTokenID                  string         `json:"couponTokenId"`
+	CouponQuantity                 string         `json:"couponQuantity"`
+	CompletedOrderAppealCount      int            `json:"completedOrderAppealCount"`
+	TotalCompletedOrderAppealCount int            `json:"totalCompletedOrderAppealCount"`
+	RealOrderStatus                int            `json:"realOrderStatus"`
+	AppealVersion                  int            `json:"appealVersion"`
+	JudgeInfo                      JudgeInfo      `json:"judgeInfo"`
+	HelpType                       string         `json:"helpType"`
+	AppealFlowStatus               string         `json:"appealFlowStatus"`
+	AppealSubStatus                string         `json:"appealSubStatus"`
+	BulkOrderFlag                  bool           `json:"bulkOrderFlag"`
+	TargetUserType                 string         `json:"targetUserType"`
+	TargetUserDisplays             []string       `json:"targetUserDisplays"`
+	AppealProcessChangeFlag        bool           `json:"appealProcessChangeFlag"`
+	AppealNegotiationNode          int            `json:"appealNegotiationNode"`
+}
+
+type PaymentTerm struct {
+	ID                     string          `json:"id"`
+	RealName               string          `json:"realName"`
+	PaymentType            int             `json:"paymentType"`
+	BankName               string          `json:"bankName"`
+	BranchName             string          `json:"branchName"`
+	AccountNo              string          `json:"accountNo"`
+	Qrcode                 string          `json:"qrcode"`
+	Visible                int             `json:"visible"`
+	PayMessage             string          `json:"payMessage"`
+	FirstName              string          `json:"firstName"`
+	LastName               string          `json:"lastName"`
+	SecondLastName         string          `json:"secondLastName"`
+	Clabe                  string          `json:"clabe"`
+	DebitCardNumber        string          `json:"debitCardNumber"`
+	Mobile                 string          `json:"mobile"`
+	BusinessName           string          `json:"businessName"`
+	Concept                string          `json:"concept"`
+	Online                 string          `json:"online"`
+	PaymentExt1            string          `json:"paymentExt1"`
+	PaymentExt2            string          `json:"paymentExt2"`
+	PaymentExt3            string          `json:"paymentExt3"`
+	PaymentExt4            string          `json:"paymentExt4"`
+	PaymentExt5            string          `json:"paymentExt5"`
+	PaymentExt6            string          `json:"paymentExt6"`
+	PaymentTemplateVersion int             `json:"paymentTemplateVersion"`
+	PaymentConfigVo        PaymentConfigVo `json:"paymentConfigVo"`
+	RuPaymentPrompt        bool            `json:"ruPaymentPrompt"`
+}
+
+type PaymentConfigVo struct {
+	PaymentType string `json:"paymentType"`
+	CheckType   int    `json:"checkType"`
+	Sort        int    `json:"sort"`
+	PaymentName string `json:"paymentName"`
+	AddTips     string `json:"addTips"`
+	ItemTips    string `json:"itemTips"`
+	Online      int    `json:"online"`
+	Items       []any  `json:"items"`
+}
+
+type OrderExtension struct {
+	IsDelayWithdraw bool   `json:"isDelayWithdraw"`
+	DelayTime       string `json:"delayTime"`
+	StartTime       string `json:"startTime"`
+}
+
+type AppraiseInfo struct {
+	Anonymous       string `json:"anonymous"`
+	AppraiseContent string `json:"appraiseContent"`
+	AppraiseID      string `json:"appraiseId"`
+	AppraiseType    string `json:"appraiseType"`
+	ModifyFlag      string `json:"modifyFlag"`
+	UpdateDate      string `json:"updateDate"`
+}
+
+type JudgeInfo struct {
+	AutoJudgeUnlockTime string `json:"autoJudgeUnlockTime"`
+	DissentResult       string `json:"dissentResult"`
+	PreDissent          string `json:"preDissent"`
+	PostDissent         string `json:"postDissent"`
+}
