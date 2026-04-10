@@ -19,3 +19,16 @@ type MarkOrderPaidRequest struct {
 	PaymentType string `json:"paymentType"`
 	PaymentID   string `json:"paymentId"`
 }
+
+type ChatMessageRequest struct {
+	SessionID   int64  `json:"sessionId"`
+	Message     string `json:"message"`
+	ContentType string `json:"contentType"`
+}
+
+type ChatSessionQueryRequest struct {
+	PageSize   int     `json:"size"`
+	SessionID  *string `json:"sessionId,omitempty"`
+	UserMaskID *string `json:"userMaskId,omitempty"`
+	LastID     *string `json:"lastId,omitempty"`
+}

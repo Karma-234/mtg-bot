@@ -308,3 +308,19 @@ type JudgeInfo struct {
 	PreDissent          string `json:"preDissent"`
 	PostDissent         string `json:"postDissent"`
 }
+
+type ChatSessionListResponse struct {
+	BaseResponse
+	Result ChatSessionListResult `json:"result"`
+}
+
+type ChatSessionListResult struct {
+	ChatSession []ChatSession `json:"chatSession"`
+}
+
+type ChatSession struct {
+	SessionName string `json:"sessionName"`
+	SessionID   string `json:"sessionId"`
+	Type        string `json:"type"`
+	ID          string `json:"id"`
+}

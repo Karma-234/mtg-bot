@@ -121,3 +121,31 @@ func (s *MerchantService) MarkOrderPaid(opts MarkOrderPaidRequest) (*http.Respon
 	}
 	return res, err
 }
+func (s *MerchantService) SendChatMessage(opts ChatMessageRequest) (*http.Response, error) {
+	url := s.Config.BaseURL + SENDCHATMESSAGE
+	res, err := PostJSON(&s.Client, url, opts)
+	if err != nil {
+		return nil, err
+	}
+	return res, err
+}
+
+func (s *MerchantService) GetChatSessions(opts ChatSessionQueryRequest) (*ChatSessionListResponse, error) {
+	url := s.Config.BaseURL + GETCHATSESSION
+	res, err := PostJSON(&s.Client, url, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	var result ChatSessionListResponse
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	if err := result.Error(); err != nil {
+		return nil, err
+	}
+
+	return &result, nil
+}
