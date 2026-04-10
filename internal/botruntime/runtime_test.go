@@ -9,22 +9,41 @@ import (
 	"time"
 
 	"github.com/karma-234/mtg-bot/internal/service"
+	"gopkg.in/telebot.v4"
 )
 
 type mockMerchantProvider struct {
-	detail *service.OrderDetailResponse
-	err    error
+	pending     *service.OrdersResponse
+	pendingErr  error
+	detail      *service.OrderDetailResponse
+	detailErr   error
+	detailCalls int
 }
 
-func (m mockMerchantProvider) GetPendingOrders(opts *service.OrderQueryRequest) (*service.OrdersResponse, error) {
+func (m *mockMerchantProvider) GetPendingOrders(opts *service.OrderQueryRequest) (*service.OrdersResponse, error) {
+	if m.pendingErr != nil {
+		return nil, m.pendingErr
+	}
+	if m.pending != nil {
+		return m.pending, nil
+	}
 	return nil, fmt.Errorf("not implemented in this test")
 }
 
-func (m mockMerchantProvider) GetOrderDetail(opts service.SingleOrderQueryRequest) (*service.OrderDetailResponse, error) {
-	if m.err != nil {
-		return nil, m.err
+func (m *mockMerchantProvider) GetOrderDetail(opts service.SingleOrderQueryRequest) (*service.OrderDetailResponse, error) {
+	m.detailCalls++
+	if m.detailErr != nil {
+		return nil, m.detailErr
 	}
 	return m.detail, nil
+}
+
+func makePendingOrdersResponse(order service.Order) *service.OrdersResponse {
+	resp := &service.OrdersResponse{}
+	resp.RetCode = 0
+	resp.Result.Items = []service.Order{order}
+	resp.Result.Count = 1
+	return resp
 }
 
 type mockWorkflowStore struct {
@@ -112,7 +131,7 @@ func TestAdvanceWorkflowRecord_DetectedStopsAtDetailReady(t *testing.T) {
 	record := service.NewOrderWorkflowRecord(7, order, now)
 	store.records[record.OrderID] = cloneRecord(record)
 
-	provider := mockMerchantProvider{
+	provider := &mockMerchantProvider{
 		detail: &service.OrderDetailResponse{
 			BaseResponse: service.BaseResponse{RetCode: 0},
 			Result: service.OrderDetail{
@@ -121,7 +140,7 @@ func TestAdvanceWorkflowRecord_DetectedStopsAtDetailReady(t *testing.T) {
 				TargetSecondName:  "Smith",
 				Amount:            "100.00",
 				CurrencyID:        "USD",
-				PaymentTermResult: service.PaymentTerm{AccountNo: "ACC-123"},
+				PaymentTermResult: service.PaymentTerm{AccountNo: "ACC-123", BankName: "MyBank"},
 			},
 		},
 	}
@@ -133,6 +152,9 @@ func TestAdvanceWorkflowRecord_DetectedStopsAtDetailReady(t *testing.T) {
 	if record.State != service.StateDetailReady {
 		t.Fatalf("record state = %s, want %s", record.State, service.StateDetailReady)
 	}
+	if record.BankName != "MyBank" {
+		t.Fatalf("record bank name = %s, want %s", record.BankName, "MyBank")
+	}
 
 	stored, found, err := store.Get(context.Background(), record.OrderID)
 	if err != nil {
@@ -143,5 +165,67 @@ func TestAdvanceWorkflowRecord_DetectedStopsAtDetailReady(t *testing.T) {
 	}
 	if stored.State != service.StateDetailReady {
 		t.Fatalf("stored state = %s, want %s", stored.State, service.StateDetailReady)
+	}
+	if stored.BankName != "MyBank" {
+		t.Fatalf("stored bank name = %s, want %s", stored.BankName, "MyBank")
+	}
+}
+
+func TestPollAndProcess_SkipsResumeForSeenOrders(t *testing.T) {
+	now := time.Now().UTC()
+	store := newMockWorkflowStore()
+	manager := NewTaskManager(store, DefaultRetryPolicy())
+	manager.now = func() time.Time { return now }
+
+	order := service.Order{
+		ID:             "order-seen",
+		Amount:         "100.00",
+		CurrencyID:     "USD",
+		CreateDate:     strconv.FormatInt(now.UnixMilli(), 10),
+		UserID:         "user-1",
+		TargetUserID:   "target-user-1",
+		TargetNickName: "target",
+	}
+
+	record := service.NewOrderWorkflowRecord(7, order, now)
+	record.State = service.StateDetailFetching
+	store.records[record.OrderID] = cloneRecord(record)
+
+	provider := &mockMerchantProvider{
+		pending: makePendingOrdersResponse(order),
+		detail: &service.OrderDetailResponse{
+			BaseResponse: service.BaseResponse{RetCode: 0},
+			Result: service.OrderDetail{
+				CreateDate:        strconv.FormatInt(now.UnixMilli(), 10),
+				TargetFirstName:   "Alice",
+				TargetSecondName:  "Smith",
+				Amount:            "100.00",
+				CurrencyID:        "USD",
+				PaymentTermResult: service.PaymentTerm{AccountNo: "ACC-123", BankName: "MyBank"},
+			},
+		},
+	}
+
+	chat := &telebot.Chat{ID: 7, Username: "test-user"}
+	if err := manager.pollAndProcess(context.Background(), nil, chat, provider, nil, 30*time.Second); err != nil {
+		t.Fatalf("pollAndProcess returned error: %v", err)
+	}
+
+	if provider.detailCalls != 1 {
+		t.Fatalf("GetOrderDetail calls = %d, want 1", provider.detailCalls)
+	}
+
+	stored, found, err := store.Get(context.Background(), record.OrderID)
+	if err != nil {
+		t.Fatalf("store.Get returned error: %v", err)
+	}
+	if !found {
+		t.Fatalf("store.Get did not find record")
+	}
+	if stored.State != service.StateDetailReady {
+		t.Fatalf("stored state = %s, want %s", stored.State, service.StateDetailReady)
+	}
+	if stored.BankName != "MyBank" {
+		t.Fatalf("stored bank name = %s, want %s", stored.BankName, "MyBank")
 	}
 }

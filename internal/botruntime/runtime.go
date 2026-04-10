@@ -99,7 +99,9 @@ func (m *TaskManager) pollAndProcess(
 		return fmt.Errorf("nil pending orders response")
 	}
 
+	seenOrderIDs := make(map[string]struct{}, len(resp.Result.Items))
 	for _, order := range resp.Result.Items {
+		seenOrderIDs[order.ID] = struct{}{}
 		if err := m.processPendingOrder(ctx, b, chat, srv, order); err != nil {
 			log.Printf("Failed to process order %s for chat %d: %v", order.ID, chat.ID, err)
 		}
@@ -115,6 +117,9 @@ func (m *TaskManager) pollAndProcess(
 	})
 
 	for _, record := range records {
+		if _, seen := seenOrderIDs[record.OrderID]; seen {
+			continue
+		}
 		if service.IsTerminalOrderState(record.State) || record.State == service.StatePaymentPendingExternal {
 			continue
 		}
@@ -226,10 +231,11 @@ func (m *TaskManager) advanceWorkflowRecord(ctx context.Context, b *telebot.Bot,
 			return err
 		}
 		message := fmt.Sprintf(
-			"Order ready for payment handoff\nID: %s\nBeneficiary: %s %s\nAccount: %s\nAmount: %s\nOrder Time: %s",
+			"Order ready for payment handoff\nID: %s\nBeneficiary: %s %s\nBank: %s\nAccount: %s\nAmount: %s\nOrder Time: %s",
 			record.OrderID,
 			record.TargetFirstName,
 			record.TargetLastName,
+			record.BankName,
 			record.AccountNo,
 			record.OrderAmount,
 			record.OrderDate.Format(time.RFC3339),
@@ -256,7 +262,7 @@ func (m *TaskManager) fetchOrderDetail(ctx context.Context, b *telebot.Bot, chat
 
 	record.TargetFirstName = detail.Result.TargetFirstName
 	record.TargetLastName = detail.Result.TargetSecondName
-	record.AccountNo = extractAccountNumber(detail.Result)
+	record.AccountNo, record.BankName = extractPaymentDetails(detail.Result)
 	record.OrderAmount = detail.Result.Amount
 	record.CurrencyID = detail.Result.CurrencyID
 	record.OrderDate = orderDate
@@ -394,19 +400,19 @@ func (m *TaskManager) unlockOrder(orderID string) {
 	delete(m.processing, orderID)
 }
 
-func extractAccountNumber(detail service.OrderDetail) string {
-	if detail.PaymentTermResult.AccountNo != "" {
-		return detail.PaymentTermResult.AccountNo
+func extractPaymentDetails(detail service.OrderDetail) (accountNo string, bankName string) {
+	if detail.PaymentTermResult.AccountNo != "" || detail.PaymentTermResult.BankName != "" {
+		return detail.PaymentTermResult.AccountNo, detail.PaymentTermResult.BankName
 	}
-	if detail.ConfirmedPayTerm.AccountNo != "" {
-		return detail.ConfirmedPayTerm.AccountNo
+	if detail.ConfirmedPayTerm.AccountNo != "" || detail.ConfirmedPayTerm.BankName != "" {
+		return detail.ConfirmedPayTerm.AccountNo, detail.ConfirmedPayTerm.BankName
 	}
 	for _, paymentTerm := range detail.PaymentTermList {
-		if paymentTerm.AccountNo != "" {
-			return paymentTerm.AccountNo
+		if paymentTerm.AccountNo != "" || paymentTerm.BankName != "" {
+			return paymentTerm.AccountNo, paymentTerm.BankName
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func isRetryableDetailError(err error) bool {

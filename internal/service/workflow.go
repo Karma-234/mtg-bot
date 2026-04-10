@@ -77,6 +77,7 @@ type OrderWorkflowRecord struct {
 	TargetNickName    string     `json:"targetNickName,omitempty"`
 	TargetFirstName   string     `json:"targetFirstName,omitempty"`
 	TargetLastName    string     `json:"targetLastName,omitempty"`
+	BankName          string     `json:"bankName,omitempty"`
 	AccountNo         string     `json:"accountNo,omitempty"`
 	OrderAmount       string     `json:"orderAmount,omitempty"`
 	CurrencyID        string     `json:"currencyId,omitempty"`
