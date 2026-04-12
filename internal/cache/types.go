@@ -29,3 +29,11 @@ type BankCache interface {
 	GetBanks(ctx context.Context, country string) ([]service.BankEntry, bool, error)
 	SetBanks(ctx context.Context, country string, banks []service.BankEntry, ttl time.Duration) error
 }
+
+type PaymentIntentStore interface {
+	Create(ctx context.Context, intent *service.PaymentIntentRecord) error
+	GetByReference(ctx context.Context, reference string) (*service.PaymentIntentRecord, bool, error)
+	Save(ctx context.Context, intent *service.PaymentIntentRecord) error
+	MarkWebhookProcessed(ctx context.Context, eventID string, ttl time.Duration) (bool, error)
+	ListByChat(ctx context.Context, chatID int64, limit int) ([]*service.PaymentIntentRecord, error)
+}
