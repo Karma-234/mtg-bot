@@ -22,3 +22,11 @@ func PostJSON(client *http.Client, url string, payload any) (*http.Response, err
 
 	return client.Do(req)
 }
+
+func GetJSON(client *http.Client, url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return client.Do(req)
+}

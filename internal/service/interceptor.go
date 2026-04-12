@@ -46,3 +46,14 @@ func (i *RequestInterceptor) RoundTrip(req *http.Request) (*http.Response, error
 	resp, err := i.Base.RoundTrip(req)
 	return resp, err
 }
+
+type PaystackInterceptor struct {
+	Base      http.RoundTripper
+	SecretKey string
+}
+
+func (i *PaystackInterceptor) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+i.SecretKey)
+	req.Header.Set("Content-Type", "application/json")
+	return i.Base.RoundTrip(req)
+}
