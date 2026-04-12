@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/karma-234/mtg-bot/internal/bothandlers"
 	"github.com/karma-234/mtg-bot/internal/botruntime"
+	"github.com/karma-234/mtg-bot/internal/webhook"
 	"gopkg.in/telebot.v4"
 )
 
@@ -73,16 +75,38 @@ func main() {
 		log.Fatalf("Failed to initialize bot: %v", err)
 	}
 	taskManager := botruntime.NewTaskManager(workflowStore, retryPolicy)
+	paymentIntentStore := buildPaymentIntentStore(rdb)
+	taskManager.SetPaymentDeps(paystackPaymentService, paymentIntentStore, bankCache)
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
 	commands := []telebot.Command{
-		{Text: "start", Description: "Start the bot and see available services"},
+		{Text: "start",    Description: "Start the bot and see available services"},
+		{Text: "balance",  Description: "Check Paystack balance"},
+		{Text: "payments", Description: "View recent payment history"},
+		{Text: "fund",     Description: "Instructions to top up Paystack balance"},
 	}
 	err = b.SetCommands(commands)
 	if err != nil {
 		log.Printf("Error setting commands: %v", err)
 	}
 	bothandlers.RegisterHandlers(b, taskManager, merchantService, userStateCache, ordersCache)
+	bothandlers.RegisterPaymentHandlers(b, paystackPaymentService, paymentIntentStore)
+
+	webhookSecret := os.Getenv("PAYSTACK_WEBHOOK_SECRET")
+	webhookPort := os.Getenv("WEBHOOK_PORT")
+	if webhookPort == "" {
+		webhookPort = "8080"
+	}
+	webhookMux := http.NewServeMux()
+	webhookMux.Handle("/webhook/paystack", webhook.NewPaystackWebhookHandler(
+		webhookSecret, paymentIntentStore, workflowStore, merchantService, b,
+	))
+	go func() {
+		log.Printf("Webhook server listening on :%s", webhookPort)
+		if err := http.ListenAndServe(":"+webhookPort, webhookMux); err != nil && err != http.ErrServerClosed {
+			log.Printf("Webhook server error: %v", err)
+		}
+	}()
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)

@@ -2,6 +2,7 @@ package bothandlers
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -80,4 +81,50 @@ func RegisterHandlers(
 	b.Handle(&durationButtons.OneHour, durationHandler(1*time.Minute))
 	b.Handle(&durationButtons.ThreeHours, durationHandler(3*time.Minute))
 	b.Handle(&durationButtons.SixHours, durationHandler(6*time.Minute))
+}
+
+type PaymentInspector interface {
+	GetBalance() (*service.PaystackBalanceResponse, error)
+}
+
+type PaymentHistoryStore interface {
+	ListByChat(ctx context.Context, chatID int64, limit int) ([]*service.PaymentIntentRecord, error)
+}
+
+func RegisterPaymentHandlers(
+	b *telebot.Bot,
+	inspector PaymentInspector,
+	store PaymentHistoryStore,
+) {
+	b.Handle("/balance", func(ctx telebot.Context) error {
+		resp, err := inspector.GetBalance()
+		if err != nil {
+			return ctx.Send("Failed to fetch Paystack balance: " + err.Error())
+		}
+		msg := "Paystack Balance:\n"
+		for _, entry := range resp.Data {
+			msg += fmt.Sprintf("  %s: %.2f\n", entry.Currency, float64(entry.Balance)/100)
+		}
+		return ctx.Send(msg)
+	})
+
+	b.Handle("/payments", func(ctx telebot.Context) error {
+		intents, err := store.ListByChat(context.Background(), ctx.Chat().ID, 10)
+		if err != nil {
+			return ctx.Send("Failed to fetch payment history: " + err.Error())
+		}
+		if len(intents) == 0 {
+			return ctx.Send("No payment records found.")
+		}
+		msg := "Recent payments:\n"
+		for _, pi := range intents {
+			msg += fmt.Sprintf("  Order: %s | Status: %s | Amount: %.2f NGN | Ref: %s\n",
+				pi.OrderID, pi.Status, float64(pi.AmountKobo)/100, pi.PaystackReference)
+		}
+		return ctx.Send(msg)
+	})
+
+	b.Handle("/fund", func(ctx telebot.Context) error {
+		return ctx.Send("To fund your Paystack balance, visit https://dashboard.paystack.com and top up your NGN balance.")
+	})
 }
