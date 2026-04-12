@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +25,10 @@ type MerchantOrdersProvider interface {
 
 type PaymentExecutor interface {
 	AutoTransferToOrder(ctx context.Context, bankLookup service.BankLookup, req service.AutoTransferRequest) (*service.AutoTransferResult, error)
+}
+
+type ProviderPaidMarker interface {
+	MarkOrderPaid(opts service.MarkOrderPaidRequest) (*http.Response, error)
 }
 
 type scheduledTask struct {
@@ -45,6 +50,7 @@ type TaskManager struct {
 	paymentExec  PaymentExecutor
 	paymentStore cache.PaymentIntentStore
 	bankLookup   service.BankLookup
+	orderMarker  ProviderPaidMarker
 }
 
 func NewTaskManager(workflowStore cache.WorkflowStore, retryPolicy RetryPolicy) *TaskManager {
@@ -61,6 +67,10 @@ func (m *TaskManager) SetPaymentDeps(exec PaymentExecutor, store cache.PaymentIn
 	m.paymentExec = exec
 	m.paymentStore = store
 	m.bankLookup = lookup
+}
+
+func (m *TaskManager) SetProviderPaidMarker(marker ProviderPaidMarker) {
+	m.orderMarker = marker
 }
 
 func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, provider string, srv MerchantOrdersProvider, ordersCache cache.OrdersCache) {
@@ -295,6 +305,14 @@ func (m *TaskManager) advanceWorkflowRecord(ctx context.Context, b *telebot.Bot,
 	case service.StatePaymentPendingExternal:
 		if m.paymentExec == nil || m.paymentStore == nil {
 			return nil
+		}
+		if m.orderMarker != nil {
+			if err := m.retryProviderMarkPaid(ctx, b, chat, record); err != nil {
+				return err
+			}
+			if record.State != service.StatePaymentPendingExternal {
+				return nil
+			}
 		}
 		return m.retryPaymentIfInsufficient(ctx, b, chat, record)
 	default:
@@ -676,6 +694,69 @@ func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot
 		if _, sendErr := b.Send(chat, fmt.Sprintf("Balance restored — transfer re-initiated for order %s\nRef: %s",
 			record.OrderID, intent.PaystackReference)); sendErr != nil {
 			log.Printf("retryPayment: notify failed for order %s: %v", record.OrderID, sendErr)
+		}
+	}
+	return nil
+}
+
+func (m *TaskManager) retryProviderMarkPaid(ctx context.Context, b *telebot.Bot, chat *telebot.Chat, record *service.OrderWorkflowRecord) error {
+	intents, err := m.paymentStore.ListByChat(ctx, record.ChatID, 50)
+	if err != nil {
+		return err
+	}
+
+	now := m.now()
+	var intent *service.PaymentIntentRecord
+	for _, pi := range intents {
+		if pi.OrderID != record.OrderID {
+			continue
+		}
+		if pi.Status != service.PaymentIntentProviderFailed {
+			continue
+		}
+		if !pi.NextRetryAt.IsZero() && now.Before(pi.NextRetryAt) {
+			continue
+		}
+		if m.retryPolicy.MaxAttempts > 0 && pi.RetryCount >= m.retryPolicy.MaxAttempts {
+			continue
+		}
+		intent = pi
+		break
+	}
+	if intent == nil {
+		return nil
+	}
+
+	resp, markErr := m.orderMarker.MarkOrderPaid(service.MarkOrderPaidRequest{
+		OrderID:     intent.OrderID,
+		PaymentType: "transfer",
+		PaymentID:   intent.PaystackReference,
+	})
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if markErr != nil {
+		intent.Status = service.PaymentIntentProviderFailed
+		intent.LastError = markErr.Error()
+		m.scheduleIntentRetry(intent, now)
+		_ = m.paymentStore.Save(ctx, intent)
+		m.notifyState(ctx, b, chat, record, fmt.Sprintf("Provider mark-paid retry failed for order %s: %v", record.OrderID, markErr))
+		return nil
+	}
+
+	intent.Status = service.PaymentIntentProviderPaid
+	intent.LastError = ""
+	m.clearIntentRetry(intent, now)
+	_ = m.paymentStore.Save(ctx, intent)
+
+	if record.State == service.StatePaymentPendingExternal {
+		if err := m.transitionRecord(ctx, record, service.EventPaymentConfirmed); err != nil {
+			return err
+		}
+	}
+	if b != nil {
+		if _, sendErr := b.Send(chat, fmt.Sprintf("Payment confirmed for order %s\nRef: %s", record.OrderID, intent.PaystackReference)); sendErr != nil {
+			log.Printf("retryProviderMarkPaid: notify failed for order %s: %v", record.OrderID, sendErr)
 		}
 	}
 	return nil

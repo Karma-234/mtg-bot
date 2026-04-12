@@ -121,6 +121,37 @@ func handleTransferSuccess(
 		return
 	}
 
+	if orderMarker != nil {
+		resp, markErr := orderMarker.MarkOrderPaid(service.MarkOrderPaidRequest{
+			OrderID:     intent.OrderID,
+			PaymentType: "transfer",
+			PaymentID:   intent.PaystackReference,
+		})
+		if resp != nil {
+			resp.Body.Close()
+		}
+		now := time.Now().UTC()
+		if markErr != nil {
+			intent.Status = service.PaymentIntentProviderFailed
+			intent.LastError = markErr.Error()
+			intent.RetryCount++
+			intent.NextRetryAt = now.Add(15 * time.Second)
+			log.Printf("webhook: MarkOrderPaid failed for order %s: %v", intent.OrderID, markErr)
+			intent.UpdatedAt = now
+			_ = intentStore.Save(ctx, intent)
+			return
+		}
+		intent.Status = service.PaymentIntentProviderPaid
+		intent.LastError = ""
+		intent.RetryCount = 0
+		intent.NextRetryAt = time.Time{}
+		intent.UpdatedAt = now
+		if err := intentStore.Save(ctx, intent); err != nil {
+			log.Printf("webhook: failed to save provider-paid intent ref=%s: %v", ref, err)
+			return
+		}
+	}
+
 	record, found, err := workflowStore.Get(ctx, intent.OrderID)
 	if err != nil || !found {
 		log.Printf("webhook: workflow record not found for order %s (err=%v)", intent.OrderID, err)
@@ -133,25 +164,6 @@ func handleTransferSuccess(
 				log.Printf("webhook: failed to advance workflow for order %s: %v", intent.OrderID, saveErr)
 			}
 		}
-	}
-
-	if orderMarker != nil {
-		resp, markErr := orderMarker.MarkOrderPaid(service.MarkOrderPaidRequest{
-			OrderID:     intent.OrderID,
-			PaymentType: "transfer",
-			PaymentID:   intent.PaystackReference,
-		})
-		if resp != nil {
-			resp.Body.Close()
-		}
-		intent.Status = service.PaymentIntentProviderPaid
-		if markErr != nil {
-			intent.Status = service.PaymentIntentProviderFailed
-			intent.LastError = markErr.Error()
-			log.Printf("webhook: MarkOrderPaid failed for order %s: %v", intent.OrderID, markErr)
-		}
-		intent.UpdatedAt = time.Now().UTC()
-		_ = intentStore.Save(ctx, intent)
 	}
 
 	if bot != nil {

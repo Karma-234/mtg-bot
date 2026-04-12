@@ -7,6 +7,7 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -86,6 +87,19 @@ func (s *mockIntentStore) ListByChat(ctx context.Context, chatID int64, limit in
 type mockWebhookWorkflowStore struct {
 	mu      sync.Mutex
 	records map[string]*service.OrderWorkflowRecord
+}
+
+type mockOrderPaidMarker struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (m *mockOrderPaidMarker) MarkOrderPaid(opts service.MarkOrderPaidRequest) (*http.Response, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, m.err
 }
 
 func newMockWebhookWorkflowStore() *mockWebhookWorkflowStore {
@@ -213,7 +227,8 @@ func TestWebhookHandler_TransferSuccess_AdvancesWorkflow(t *testing.T) {
 		UpdatedAt: now,
 	})
 
-	handler := NewPaystackWebhookHandler(secret, intentStore, wfStore, nil, nil)
+	marker := &mockOrderPaidMarker{}
+	handler := NewPaystackWebhookHandler(secret, intentStore, wfStore, marker, nil)
 
 	body := makeEventBody("transfer.success", ref)
 	req := httptest.NewRequest(http.MethodPost, "/webhook/paystack", bytes.NewReader(body))
@@ -230,8 +245,8 @@ func TestWebhookHandler_TransferSuccess_AdvancesWorkflow(t *testing.T) {
 	if !found {
 		t.Fatal("intent not found after webhook")
 	}
-	if intent.Status != service.PaymentIntentTransferSuccess {
-		t.Fatalf("intent status = %s, want TRANSFER_SUCCESS", intent.Status)
+	if intent.Status != service.PaymentIntentProviderPaid {
+		t.Fatalf("intent status = %s, want PROVIDER_MARKED_PAID", intent.Status)
 	}
 
 	wf, found, _ := wfStore.Get(context.Background(), orderID)
@@ -240,6 +255,67 @@ func TestWebhookHandler_TransferSuccess_AdvancesWorkflow(t *testing.T) {
 	}
 	if wf.State != service.StatePaid {
 		t.Fatalf("workflow state = %s, want PAID", wf.State)
+	}
+	if marker.calls != 1 {
+		t.Fatalf("marker calls = %d, want 1", marker.calls)
+	}
+}
+
+func TestWebhookHandler_TransferSuccess_ProviderFailureLeavesWorkflowPending(t *testing.T) {
+	now := time.Now().UTC()
+	ref := "ref-wh-provider-fail"
+	orderID := "order-wh-provider-fail"
+	secret := "test-secret"
+
+	intentStore := newMockIntentStore()
+	_ = intentStore.Create(context.Background(), &service.PaymentIntentRecord{
+		PaymentID:         "pi-wh-fail",
+		ChatID:            42,
+		OrderID:           orderID,
+		PaystackReference: ref,
+		AmountKobo:        100000,
+		Currency:          "NGN",
+		Status:            service.PaymentIntentTransferPending,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	})
+
+	wfStore := newMockWebhookWorkflowStore()
+	_ = wfStore.Save(context.Background(), &service.OrderWorkflowRecord{OrderID: orderID, ChatID: 42, State: service.StatePaymentPendingExternal, CreatedAt: now, UpdatedAt: now})
+	marker := &mockOrderPaidMarker{err: fmt.Errorf("provider temporarily unavailable")}
+	handler := NewPaystackWebhookHandler(secret, intentStore, wfStore, marker, nil)
+
+	body := makeEventBody("transfer.success", ref)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/paystack", bytes.NewReader(body))
+	req.Header.Set("x-paystack-signature", makeSignature(body, secret))
+	rr := httptest.NewRecorder()
+
+	handler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	intent, found, _ := intentStore.GetByReference(context.Background(), ref)
+	if !found {
+		t.Fatal("intent not found after webhook")
+	}
+	if intent.Status != service.PaymentIntentProviderFailed {
+		t.Fatalf("intent status = %s, want PROVIDER_MARK_FAILED", intent.Status)
+	}
+	if intent.RetryCount != 1 {
+		t.Fatalf("retry count = %d, want 1", intent.RetryCount)
+	}
+	if intent.NextRetryAt.IsZero() {
+		t.Fatal("next retry should be set")
+	}
+
+	wf, found, _ := wfStore.Get(context.Background(), orderID)
+	if !found {
+		t.Fatal("workflow record not found after webhook")
+	}
+	if wf.State != service.StatePaymentPendingExternal {
+		t.Fatalf("workflow state = %s, want PAYMENT_PENDING_EXTERNAL", wf.State)
 	}
 }
 

@@ -79,6 +79,7 @@ func main() {
 	taskManager := botruntime.NewTaskManager(workflowStore, retryPolicy)
 	paymentIntentStore := buildPaymentIntentStore(rdb)
 	taskManager.SetPaymentDeps(paystackPaymentService, paymentIntentStore, bankCache)
+	taskManager.SetProviderPaidMarker(merchantService)
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
 	commands := []telebot.Command{
