@@ -29,6 +29,7 @@ const (
 	EventRetryTimerFired      OrderEvent = "RETRY_TIMER_FIRED"
 	EventOrderExpired         OrderEvent = "ORDER_EXPIRED"
 	EventHandoffToPayment     OrderEvent = "HANDOFF_TO_PAYMENT"
+	EventPaymentConfirmed     OrderEvent = "PAYMENT_CONFIRMED"
 )
 
 var terminalOrderStates = map[OrderState]bool{
@@ -57,6 +58,7 @@ var orderTransitions = map[OrderState]map[OrderEvent]OrderState{
 		EventOrderExpired:     StateTimedOut,
 	},
 	StatePaymentPendingExternal: {
+		EventPaymentConfirmed: StatePaid,
 		EventOrderExpired: StateTimedOut,
 	},
 }
@@ -98,7 +100,7 @@ func ValidOrderState(state OrderState) bool {
 
 func ValidOrderEvent(event OrderEvent) bool {
 	switch event {
-	case EventOrderIngested, EventDetailFetchOK, EventDetailFetchRetryable, EventDetailFetchFatal, EventRetryTimerFired, EventOrderExpired, EventHandoffToPayment:
+	case EventOrderIngested, EventDetailFetchOK, EventDetailFetchRetryable, EventDetailFetchFatal, EventRetryTimerFired, EventOrderExpired, EventHandoffToPayment, EventPaymentConfirmed:
 		return true
 	default:
 		return false

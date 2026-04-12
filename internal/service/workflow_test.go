@@ -13,6 +13,7 @@ func TestApplyOrderEvent(t *testing.T) {
 		{name: "detected to detail fetching", from: StateDetected, event: EventOrderIngested, want: StateDetailFetching},
 		{name: "detail fetching to retrying", from: StateDetailFetching, event: EventDetailFetchRetryable, want: StateRetryingDetail},
 		{name: "detail ready to payment pending", from: StateDetailReady, event: EventHandoffToPayment, want: StatePaymentPendingExternal},
+		{name: "payment pending to paid", from: StatePaymentPendingExternal, event: EventPaymentConfirmed, want: StatePaid},
 		{name: "terminal state rejected", from: StateTimedOut, event: EventOrderExpired, want: StateTimedOut, wantError: true},
 		{name: "invalid transition rejected", from: StateDetected, event: EventDetailFetchOK, want: StateDetected, wantError: true},
 	}
