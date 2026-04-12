@@ -30,6 +30,11 @@ type BankCache interface {
 	SetBanks(ctx context.Context, country string, banks []service.BankEntry, ttl time.Duration) error
 }
 
+type RecipientCodeCache interface {
+	GetRecipientCode(ctx context.Context, country, bankCode, accountNumber string) (string, bool, error)
+	SetRecipientCode(ctx context.Context, country, bankCode, accountNumber, recipientCode string, ttl time.Duration) error
+}
+
 type PaymentIntentStore interface {
 	Create(ctx context.Context, intent *service.PaymentIntentRecord) error
 	GetByReference(ctx context.Context, reference string) (*service.PaymentIntentRecord, bool, error)

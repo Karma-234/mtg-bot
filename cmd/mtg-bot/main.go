@@ -34,6 +34,8 @@ func main() {
 	redisConfig := buildRedisConfigFromEnv()
 	rdb := buildRedisClient(redisConfig)
 	bankCache := buildBankCache(rdb)
+	recipientCodeCache := buildRecipientCodeCache(rdb)
+	paystackPaymentService.RecipientCodes = recipientCodeCache
 	cacheCtx, cancelCache := context.WithCancel(context.Background())
 	defer cancelCache()
 	refreshBanks := func(ctx context.Context) {
@@ -80,10 +82,10 @@ func main() {
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
 	commands := []telebot.Command{
-		{Text: "start",    Description: "Start the bot and see available services"},
-		{Text: "balance",  Description: "Check Paystack balance"},
+		{Text: "start", Description: "Start the bot and see available services"},
+		{Text: "balance", Description: "Check Paystack balance"},
 		{Text: "payments", Description: "View recent payment history"},
-		{Text: "fund",     Description: "Instructions to top up Paystack balance"},
+		{Text: "fund", Description: "Instructions to top up Paystack balance"},
 	}
 	err = b.SetCommands(commands)
 	if err != nil {

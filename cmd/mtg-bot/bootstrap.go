@@ -125,6 +125,10 @@ func buildBankCache(rdb *redis.Client) cache.BankCache {
 	return cache.NewRedisBankCache(rdb)
 }
 
+func buildRecipientCodeCache(rdb *redis.Client) cache.RecipientCodeCache {
+	return cache.NewRedisRecipientCodeCache(rdb)
+}
+
 func buildPaymentIntentStore(rdb *redis.Client) cache.PaymentIntentStore {
 	return cache.NewRedisPaymentIntentStore(rdb)
 }

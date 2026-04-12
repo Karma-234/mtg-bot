@@ -7,14 +7,21 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const defaultTransferFeeBufferKobo int64 = 10000
+const defaultRecipientCodeTTL = 30 * 24 * time.Hour
 
 var ErrInsufficientBalance = errors.New("insufficient paystack balance")
 
 type BankLookup interface {
 	GetBanks(ctx context.Context, country string) ([]BankEntry, bool, error)
+}
+
+type RecipientCodeStore interface {
+	GetRecipientCode(ctx context.Context, country, bankCode, accountNumber string) (string, bool, error)
+	SetRecipientCode(ctx context.Context, country, bankCode, accountNumber, recipientCode string, ttl time.Duration) error
 }
 
 type AutoTransferRequest struct {
@@ -38,8 +45,9 @@ type AutoTransferResult struct {
 }
 
 type PaystackService struct {
-	Client  http.Client
-	BaseURL string
+	Client         http.Client
+	BaseURL        string
+	RecipientCodes RecipientCodeStore
 }
 
 func (s *PaystackService) GetBalance() (*PaystackBalanceResponse, error) {
@@ -143,6 +151,25 @@ func normalizeBankName(value string) string {
 	return strings.Join(parts, " ")
 }
 
+func normalizeRecipientPart(value string) string {
+	return strings.TrimSpace(strings.ToUpper(value))
+}
+
+func isInvalidRecipientError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"invalid transfer recipient", "transfer recipient was not found", "recipient code", "recipient"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (s *PaystackService) FindBankCodeByName(ctx context.Context, bankLookup BankLookup, country, bankName string) (string, error) {
 	if bankLookup == nil {
 		return "", fmt.Errorf("bank lookup is nil")
@@ -227,13 +254,7 @@ func (s *PaystackService) AutoTransferToOrder(ctx context.Context, bankLookup Ba
 		return nil, err
 	}
 
-	recipientResp, err := s.CreateTransferRecipient(CreateRecipientRequest{
-		Type:          "nuban",
-		Name:          recipientName,
-		AccountNumber: req.AccountNumber,
-		BankCode:      bankCode,
-		Currency:      strings.ToUpper(req.Currency),
-	})
+	recipientCode, err := s.recipientCodeForTransfer(ctx, req, bankCode, recipientName)
 	if err != nil {
 		return nil, err
 	}
@@ -241,11 +262,26 @@ func (s *PaystackService) AutoTransferToOrder(ctx context.Context, bankLookup Ba
 	transferResp, err := s.InitiateTransfer(InitiateTransferRequest{
 		Source:    "balance",
 		Amount:    req.AmountKobo,
-		Recipient: recipientResp.Data.RecipientCode,
+		Recipient: recipientCode,
 		Reference: req.Reference,
 		Reason:    req.Reason,
 		Currency:  strings.ToUpper(req.Currency),
 	})
+	if err != nil && recipientCode != "" && s.RecipientCodes != nil && isInvalidRecipientError(err) {
+		refreshedCode, refreshErr := s.createAndCacheRecipientCode(ctx, req.Country, bankCode, req.AccountNumber, recipientName, strings.ToUpper(req.Currency))
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
+
+		transferResp, err = s.InitiateTransfer(InitiateTransferRequest{
+			Source:    "balance",
+			Amount:    req.AmountKobo,
+			Recipient: refreshedCode,
+			Reference: req.Reference,
+			Reason:    req.Reason,
+			Currency:  strings.ToUpper(req.Currency),
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -255,4 +291,39 @@ func (s *PaystackService) AutoTransferToOrder(ctx context.Context, bankLookup Ba
 		TransferCode: transferResp.Data.TransferCode,
 		Status:       transferResp.Data.Status,
 	}, nil
+}
+
+func (s *PaystackService) recipientCodeForTransfer(ctx context.Context, req AutoTransferRequest, bankCode, recipientName string) (string, error) {
+	if s.RecipientCodes != nil {
+		cachedCode, found, err := s.RecipientCodes.GetRecipientCode(ctx, normalizeRecipientPart(req.Country), normalizeRecipientPart(bankCode), strings.TrimSpace(req.AccountNumber))
+		if err != nil {
+			return "", err
+		}
+		if found && cachedCode != "" {
+			return cachedCode, nil
+		}
+	}
+
+	return s.createAndCacheRecipientCode(ctx, req.Country, bankCode, req.AccountNumber, recipientName, strings.ToUpper(req.Currency))
+}
+
+func (s *PaystackService) createAndCacheRecipientCode(ctx context.Context, country, bankCode, accountNumber, recipientName, currency string) (string, error) {
+	recipientResp, err := s.CreateTransferRecipient(CreateRecipientRequest{
+		Type:          "nuban",
+		Name:          recipientName,
+		AccountNumber: accountNumber,
+		BankCode:      bankCode,
+		Currency:      currency,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if s.RecipientCodes != nil {
+		if err := s.RecipientCodes.SetRecipientCode(ctx, normalizeRecipientPart(country), normalizeRecipientPart(bankCode), strings.TrimSpace(accountNumber), recipientResp.Data.RecipientCode, defaultRecipientCodeTTL); err != nil {
+			return "", err
+		}
+	}
+
+	return recipientResp.Data.RecipientCode, nil
 }
