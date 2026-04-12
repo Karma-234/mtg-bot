@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-const defaultTransferFeeBufferKobo int64 = 10000
 const defaultRecipientCodeTTL = 30 * 24 * time.Hour
 
 var ErrInsufficientBalance = errors.New("insufficient paystack balance")
@@ -170,6 +169,21 @@ func isInvalidRecipientError(err error) bool {
 	return false
 }
 
+func classifyTransferError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"insufficient balance", "balance is not enough", "debit balance too low", "low balance"} {
+		if strings.Contains(message, marker) {
+			return fmt.Errorf("%w: %v", ErrInsufficientBalance, err)
+		}
+	}
+
+	return err
+}
+
 func (s *PaystackService) FindBankCodeByName(ctx context.Context, bankLookup BankLookup, country, bankName string) (string, error) {
 	if bankLookup == nil {
 		return "", fmt.Errorf("bank lookup is nil")
@@ -190,29 +204,6 @@ func (s *PaystackService) FindBankCodeByName(ctx context.Context, bankLookup Ban
 	}
 
 	return "", fmt.Errorf("bank code not found for bank name %q", bankName)
-}
-
-func (s *PaystackService) EnsureSufficientBalance(requiredKobo int64, currency string) error {
-	balanceResp, err := s.GetBalance()
-	if err != nil {
-		return err
-	}
-
-	balanceByCurrency := int64(0)
-	targetCurrency := strings.ToUpper(currency)
-	for _, entry := range balanceResp.Data {
-		if strings.EqualFold(entry.Currency, targetCurrency) {
-			balanceByCurrency = entry.Balance
-			break
-		}
-	}
-
-	requiredTotal := requiredKobo + defaultTransferFeeBufferKobo
-	if balanceByCurrency < requiredTotal {
-		return fmt.Errorf("%w: available=%d required=%d currency=%s", ErrInsufficientBalance, balanceByCurrency, requiredTotal, targetCurrency)
-	}
-
-	return nil
 }
 
 func (s *PaystackService) AutoTransferToOrder(ctx context.Context, bankLookup BankLookup, req AutoTransferRequest) (*AutoTransferResult, error) {
@@ -250,10 +241,6 @@ func (s *PaystackService) AutoTransferToOrder(ctx context.Context, bankLookup Ba
 		recipientName = resolvedAccount.Data.AccountName
 	}
 
-	if err := s.EnsureSufficientBalance(req.AmountKobo, req.Currency); err != nil {
-		return nil, err
-	}
-
 	recipientCode, err := s.recipientCodeForTransfer(ctx, req, bankCode, recipientName)
 	if err != nil {
 		return nil, err
@@ -267,6 +254,7 @@ func (s *PaystackService) AutoTransferToOrder(ctx context.Context, bankLookup Ba
 		Reason:    req.Reason,
 		Currency:  strings.ToUpper(req.Currency),
 	})
+	err = classifyTransferError(err)
 	if err != nil && recipientCode != "" && s.RecipientCodes != nil && isInvalidRecipientError(err) {
 		refreshedCode, refreshErr := s.createAndCacheRecipientCode(ctx, req.Country, bankCode, req.AccountNumber, recipientName, strings.ToUpper(req.Currency))
 		if refreshErr != nil {
@@ -281,6 +269,7 @@ func (s *PaystackService) AutoTransferToOrder(ctx context.Context, bankLookup Ba
 			Reason:    req.Reason,
 			Currency:  strings.ToUpper(req.Currency),
 		})
+		err = classifyTransferError(err)
 	}
 	if err != nil {
 		return nil, err

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,8 +52,6 @@ func TestAutoTransferToOrder_RecipientCacheHitSkipsCreate(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, PaystackResolveAccount):
 			writeJSON(t, w, ResolveAccountResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: ResolveAccountData{AccountName: "Test User"}})
-		case r.Method == http.MethodGet && r.URL.Path == PaystackBalance:
-			writeJSON(t, w, PaystackBalanceResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: []BalanceEntry{{Currency: "NGN", Balance: 500000}}})
 		case r.Method == http.MethodPost && r.URL.Path == PaystackCreateRecipient:
 			createCalls++
 			writeJSON(t, w, CreateRecipientResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: RecipientData{RecipientCode: "RCP_created"}})
@@ -104,8 +103,6 @@ func TestAutoTransferToOrder_RecipientCacheMissCreatesAndStores(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, PaystackResolveAccount):
 			writeJSON(t, w, ResolveAccountResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: ResolveAccountData{AccountName: "Test User"}})
-		case r.Method == http.MethodGet && r.URL.Path == PaystackBalance:
-			writeJSON(t, w, PaystackBalanceResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: []BalanceEntry{{Currency: "NGN", Balance: 500000}}})
 		case r.Method == http.MethodPost && r.URL.Path == PaystackCreateRecipient:
 			createCalls++
 			writeJSON(t, w, CreateRecipientResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: RecipientData{RecipientCode: "RCP_created"}})
@@ -154,8 +151,6 @@ func TestAutoTransferToOrder_StaleCachedRecipientRefreshesOnce(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, PaystackResolveAccount):
 			writeJSON(t, w, ResolveAccountResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: ResolveAccountData{AccountName: "Test User"}})
-		case r.Method == http.MethodGet && r.URL.Path == PaystackBalance:
-			writeJSON(t, w, PaystackBalanceResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: []BalanceEntry{{Currency: "NGN", Balance: 500000}}})
 		case r.Method == http.MethodPost && r.URL.Path == PaystackCreateRecipient:
 			createCalls++
 			writeJSON(t, w, CreateRecipientResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: RecipientData{RecipientCode: "RCP_fresh"}})
@@ -207,6 +202,69 @@ func TestAutoTransferToOrder_StaleCachedRecipientRefreshesOnce(t *testing.T) {
 	}
 	if store.sets != 1 {
 		t.Fatalf("cache set count = %d, want 1", store.sets)
+	}
+}
+
+func TestAutoTransferToOrder_TransferInsufficientBalanceMapsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, PaystackResolveAccount):
+			writeJSON(t, w, ResolveAccountResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: ResolveAccountData{AccountName: "Test User"}})
+		case r.Method == http.MethodPost && r.URL.Path == PaystackCreateRecipient:
+			writeJSON(t, w, CreateRecipientResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: RecipientData{RecipientCode: "RCP_created"}})
+		case r.Method == http.MethodPost && r.URL.Path == PaystackTransfer:
+			writeJSON(t, w, TransferResponse{BasePaystackResponse: BasePaystackResponse{Status: false, Message: "Balance is not enough for this transfer"}})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	service := &PaystackService{Client: *server.Client(), BaseURL: server.URL}
+
+	_, err := service.AutoTransferToOrder(context.Background(), stubBankLookup{banks: []BankEntry{{Name: "First Bank", Code: "011"}}}, AutoTransferRequest{
+		AccountNumber: "0001234567",
+		BankName:      "First Bank",
+		AmountKobo:    150000,
+		Currency:      "NGN",
+		Reference:     "ref-1",
+		Country:       "NG",
+	})
+	if !errors.Is(err, ErrInsufficientBalance) {
+		t.Fatalf("error = %v, want wrapped ErrInsufficientBalance", err)
+	}
+}
+
+func TestAutoTransferToOrder_TransferGenericFailureRemainsGeneric(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, PaystackResolveAccount):
+			writeJSON(t, w, ResolveAccountResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: ResolveAccountData{AccountName: "Test User"}})
+		case r.Method == http.MethodPost && r.URL.Path == PaystackCreateRecipient:
+			writeJSON(t, w, CreateRecipientResponse{BasePaystackResponse: BasePaystackResponse{Status: true}, Data: RecipientData{RecipientCode: "RCP_created"}})
+		case r.Method == http.MethodPost && r.URL.Path == PaystackTransfer:
+			writeJSON(t, w, TransferResponse{BasePaystackResponse: BasePaystackResponse{Status: false, Message: "Transfer OTP required"}})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	service := &PaystackService{Client: *server.Client(), BaseURL: server.URL}
+
+	_, err := service.AutoTransferToOrder(context.Background(), stubBankLookup{banks: []BankEntry{{Name: "First Bank", Code: "011"}}}, AutoTransferRequest{
+		AccountNumber: "0001234567",
+		BankName:      "First Bank",
+		AmountKobo:    150000,
+		Currency:      "NGN",
+		Reference:     "ref-1",
+		Country:       "NG",
+	})
+	if err == nil {
+		t.Fatalf("expected transfer error")
+	}
+	if errors.Is(err, ErrInsufficientBalance) {
+		t.Fatalf("error = %v, did not want ErrInsufficientBalance", err)
 	}
 }
 
