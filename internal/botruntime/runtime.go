@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,10 @@ import (
 type MerchantOrdersProvider interface {
 	GetPendingOrders(opts *service.OrderQueryRequest) (*service.OrdersResponse, error)
 	GetOrderDetail(opts service.SingleOrderQueryRequest) (*service.OrderDetailResponse, error)
+}
+
+type PaymentExecutor interface {
+	AutoTransferToOrder(ctx context.Context, bankLookup service.BankLookup, req service.AutoTransferRequest) (*service.AutoTransferResult, error)
 }
 
 type scheduledTask struct {
@@ -36,6 +41,10 @@ type TaskManager struct {
 	retryPolicy   RetryPolicy
 	now           func() time.Time
 	mu            sync.RWMutex
+
+	paymentExec  PaymentExecutor
+	paymentStore cache.PaymentIntentStore
+	bankLookup   service.BankLookup
 }
 
 func NewTaskManager(workflowStore cache.WorkflowStore, retryPolicy RetryPolicy) *TaskManager {
@@ -46,6 +55,12 @@ func NewTaskManager(workflowStore cache.WorkflowStore, retryPolicy RetryPolicy) 
 		retryPolicy:   retryPolicy,
 		now:           time.Now,
 	}
+}
+
+func (m *TaskManager) SetPaymentDeps(exec PaymentExecutor, store cache.PaymentIntentStore, lookup service.BankLookup) {
+	m.paymentExec = exec
+	m.paymentStore = store
+	m.bankLookup = lookup
 }
 
 func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *telebot.Chat, provider string, srv MerchantOrdersProvider, ordersCache cache.OrdersCache) {
@@ -152,7 +167,7 @@ func (m *TaskManager) pollAndProcess(
 		if _, seen := seenOrderIDs[record.OrderID]; seen {
 			continue
 		}
-		if service.IsTerminalOrderState(record.State) || record.State == service.StatePaymentPendingExternal {
+		if service.IsTerminalOrderState(record.State) {
 			continue
 		}
 		if err := m.resumeWorkflowRecord(ctx, b, chat, srv, record); err != nil {
@@ -262,18 +277,26 @@ func (m *TaskManager) advanceWorkflowRecord(ctx context.Context, b *telebot.Bot,
 		if err := m.transitionRecord(ctx, record, service.EventHandoffToPayment); err != nil {
 			return err
 		}
-		message := fmt.Sprintf(
-			"Order ready for payment handoff\nID: %s\nBeneficiary: %s %s\nBank: %s\nAccount: %s\nAmount: %s\nOrder Time: %s",
-			record.OrderID,
-			record.TargetFirstName,
-			record.TargetLastName,
-			record.BankName,
-			record.AccountNo,
-			record.OrderAmount,
-			record.OrderDate.Format(time.RFC3339),
-		)
-		m.notifyState(ctx, b, chat, record, message)
-		return nil
+		if m.paymentExec == nil || m.paymentStore == nil {
+			message := fmt.Sprintf(
+				"Order ready for payment handoff\nID: %s\nBeneficiary: %s %s\nBank: %s\nAccount: %s\nAmount: %s\nOrder Time: %s",
+				record.OrderID,
+				record.TargetFirstName,
+				record.TargetLastName,
+				record.BankName,
+				record.AccountNo,
+				record.OrderAmount,
+				record.OrderDate.Format(time.RFC3339),
+			)
+			m.notifyState(ctx, b, chat, record, message)
+			return nil
+		}
+		return m.initiatePayment(ctx, b, chat, record)
+	case service.StatePaymentPendingExternal:
+		if m.paymentExec == nil || m.paymentStore == nil {
+			return nil
+		}
+		return m.retryPaymentIfInsufficient(ctx, b, chat, record)
 	default:
 		return nil
 	}
@@ -406,6 +429,9 @@ func (m *TaskManager) notifyState(ctx context.Context, b *telebot.Bot, chat *tel
 	if record.LastNotifiedState == record.State {
 		return
 	}
+	if b == nil {
+		return
+	}
 	if _, err := b.Send(chat, message); err != nil {
 		log.Printf("Failed to send workflow update for order %s to chat %d: %v", record.OrderID, chat.ID, err)
 		return
@@ -461,6 +487,140 @@ func isRetryableDetailError(err error) bool {
 	}
 
 	return false
+}
+
+func safePrefix(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+func (m *TaskManager) initiatePayment(ctx context.Context, b *telebot.Bot, chat *telebot.Chat, record *service.OrderWorkflowRecord) error {
+	amtFloat, err := strconv.ParseFloat(record.OrderAmount, 64)
+	if err != nil {
+		log.Printf("initiatePayment: bad OrderAmount %q for order %s: %v", record.OrderAmount, record.OrderID, err)
+		return nil
+	}
+	amountKobo := int64(amtFloat * 100)
+	now := m.now()
+	ref := fmt.Sprintf("mtg-%s-%d", safePrefix(record.OrderID, 8), now.UnixMilli())
+
+	intent := &service.PaymentIntentRecord{
+		PaymentID:         fmt.Sprintf("pi-%s-%d", safePrefix(record.OrderID, 8), now.UnixNano()),
+		ChatID:            record.ChatID,
+		OrderID:           record.OrderID,
+		Provider:          "bybit",
+		PaystackReference: ref,
+		AmountKobo:        amountKobo,
+		Currency:          "NGN",
+		Status:            service.PaymentIntentInitiated,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if err := m.paymentStore.Create(ctx, intent); err != nil {
+		log.Printf("initiatePayment: failed to create intent for order %s: %v", record.OrderID, err)
+		return nil
+	}
+
+	result, transferErr := m.paymentExec.AutoTransferToOrder(ctx, m.bankLookup, service.AutoTransferRequest{
+		OrderID:       record.OrderID,
+		ChatID:        record.ChatID,
+		Provider:      "bybit",
+		Beneficiary:   strings.TrimSpace(record.TargetFirstName + " " + record.TargetLastName),
+		AccountNumber: record.AccountNo,
+		BankName:      record.BankName,
+		AmountKobo:    amountKobo,
+		Currency:      "NGN",
+		Reference:     ref,
+		Reason:        fmt.Sprintf("Bybit P2P order %s", record.OrderID),
+		Country:       "NG",
+	})
+
+	if transferErr != nil {
+		if errors.Is(transferErr, service.ErrInsufficientBalance) {
+			intent.Status = service.PaymentIntentInsufficientFund
+			intent.LastError = transferErr.Error()
+			intent.UpdatedAt = m.now()
+			_ = m.paymentStore.Save(ctx, intent)
+			m.notifyState(ctx, b, chat, record,
+				fmt.Sprintf("Insufficient Paystack balance for order %s (%.2f NGN required). Please top up your Paystack balance.",
+					record.OrderID, amtFloat))
+			return nil
+		}
+		intent.Status = service.PaymentIntentTransferFailed
+		intent.LastError = transferErr.Error()
+		intent.UpdatedAt = m.now()
+		_ = m.paymentStore.Save(ctx, intent)
+		m.notifyState(ctx, b, chat, record, fmt.Sprintf("Transfer failed for order %s: %v", record.OrderID, transferErr))
+		return nil
+	}
+
+	intent.Status = service.PaymentIntentTransferPending
+	intent.TransferCode = result.TransferCode
+	intent.UpdatedAt = m.now()
+	_ = m.paymentStore.Save(ctx, intent)
+	if b != nil {
+		if _, sendErr := b.Send(chat, fmt.Sprintf("Transfer initiated for order %s\nReference: %s\nCode: %s",
+			record.OrderID, ref, result.TransferCode)); sendErr != nil {
+			log.Printf("initiatePayment: notify failed for order %s: %v", record.OrderID, sendErr)
+		}
+	}
+	return nil
+}
+
+func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot.Bot, chat *telebot.Chat, record *service.OrderWorkflowRecord) error {
+	intents, err := m.paymentStore.ListByChat(ctx, record.ChatID, 50)
+	if err != nil {
+		return err
+	}
+	var intent *service.PaymentIntentRecord
+	for _, pi := range intents {
+		if pi.OrderID == record.OrderID && pi.Status == service.PaymentIntentInsufficientFund {
+			intent = pi
+			break
+		}
+	}
+	if intent == nil {
+		return nil
+	}
+
+	result, transferErr := m.paymentExec.AutoTransferToOrder(ctx, m.bankLookup, service.AutoTransferRequest{
+		OrderID:       record.OrderID,
+		ChatID:        record.ChatID,
+		Provider:      "bybit",
+		Beneficiary:   strings.TrimSpace(record.TargetFirstName + " " + record.TargetLastName),
+		AccountNumber: record.AccountNo,
+		BankName:      record.BankName,
+		AmountKobo:    intent.AmountKobo,
+		Currency:      intent.Currency,
+		Reference:     intent.PaystackReference,
+		Reason:        fmt.Sprintf("Bybit P2P order %s (retry)", record.OrderID),
+		Country:       "NG",
+	})
+	if transferErr != nil {
+		if errors.Is(transferErr, service.ErrInsufficientBalance) {
+			return nil // silently wait; user already notified
+		}
+		intent.Status = service.PaymentIntentTransferFailed
+		intent.LastError = transferErr.Error()
+		intent.UpdatedAt = m.now()
+		_ = m.paymentStore.Save(ctx, intent)
+		m.notifyState(ctx, b, chat, record, fmt.Sprintf("Transfer retry failed for order %s: %v", record.OrderID, transferErr))
+		return nil
+	}
+
+	intent.Status = service.PaymentIntentTransferPending
+	intent.TransferCode = result.TransferCode
+	intent.UpdatedAt = m.now()
+	_ = m.paymentStore.Save(ctx, intent)
+	if b != nil {
+		if _, sendErr := b.Send(chat, fmt.Sprintf("Balance restored — transfer re-initiated for order %s\nRef: %s",
+			record.OrderID, intent.PaystackReference)); sendErr != nil {
+			log.Printf("retryPayment: notify failed for order %s: %v", record.OrderID, sendErr)
+		}
+	}
+	return nil
 }
 
 func (m *TaskManager) StopAll() {

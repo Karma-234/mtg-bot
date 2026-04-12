@@ -12,6 +12,70 @@ import (
 	"gopkg.in/telebot.v4"
 )
 
+type mockPaymentExecutor struct {
+	result  *service.AutoTransferResult
+	err     error
+	calls   int
+	lastReq service.AutoTransferRequest
+}
+
+func (m *mockPaymentExecutor) AutoTransferToOrder(ctx context.Context, bankLookup service.BankLookup, req service.AutoTransferRequest) (*service.AutoTransferResult, error) {
+	m.calls++
+	m.lastReq = req
+	return m.result, m.err
+}
+
+type mockPaymentIntentStore struct {
+	mu      sync.Mutex
+	records map[string]*service.PaymentIntentRecord
+}
+
+func newMockPaymentIntentStore() *mockPaymentIntentStore {
+	return &mockPaymentIntentStore{records: make(map[string]*service.PaymentIntentRecord)}
+}
+
+func cloneIntent(r *service.PaymentIntentRecord) *service.PaymentIntentRecord { cp := *r; return &cp }
+
+func (s *mockPaymentIntentStore) Create(ctx context.Context, intent *service.PaymentIntentRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records[intent.PaystackReference] = cloneIntent(intent)
+	return nil
+}
+
+func (s *mockPaymentIntentStore) GetByReference(ctx context.Context, ref string) (*service.PaymentIntentRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.records[ref]
+	if !ok {
+		return nil, false, nil
+	}
+	return cloneIntent(r), true, nil
+}
+
+func (s *mockPaymentIntentStore) Save(ctx context.Context, intent *service.PaymentIntentRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records[intent.PaystackReference] = cloneIntent(intent)
+	return nil
+}
+
+func (s *mockPaymentIntentStore) MarkWebhookProcessed(ctx context.Context, eventID string, ttl time.Duration) (bool, error) {
+	return true, nil
+}
+
+func (s *mockPaymentIntentStore) ListByChat(ctx context.Context, chatID int64, limit int) ([]*service.PaymentIntentRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result []*service.PaymentIntentRecord
+	for _, r := range s.records {
+		if r.ChatID == chatID {
+			result = append(result, cloneIntent(r))
+		}
+	}
+	return result, nil
+}
+
 type mockMerchantProvider struct {
 	pending     *service.OrdersResponse
 	pendingErr  error
@@ -303,5 +367,136 @@ func TestSchedule_ExistingDifferentProviderDoesNotReplaceTask(t *testing.T) {
 	}
 	if !storedTask.deadline.Equal(existingTask.deadline) {
 		t.Fatalf("task deadline changed from %s to %s", existingTask.deadline, storedTask.deadline)
+	}
+}
+
+func TestInitiatePayment_InsufficientFundsKeepsPendingExternal(t *testing.T) {
+	now := time.Now().UTC()
+	wfStore := newMockWorkflowStore()
+	piStore := newMockPaymentIntentStore()
+	exec := &mockPaymentExecutor{err: fmt.Errorf("wrap: %w", service.ErrInsufficientBalance)}
+	manager := NewTaskManager(wfStore, DefaultRetryPolicy())
+	manager.now = func() time.Time { return now }
+	manager.SetPaymentDeps(exec, piStore, nil)
+
+	order := service.Order{
+		ID:         "ord-insuf",
+		Amount:     "50000.00",
+		CurrencyID: "NGN",
+		CreateDate: strconv.FormatInt(now.UnixMilli(), 10),
+	}
+	record := service.NewOrderWorkflowRecord(1, order, now)
+	record.State = service.StateDetailReady
+	record.AccountNo = "0123456789"
+	record.BankName = "Test Bank"
+	record.OrderAmount = "50000.00"
+	wfStore.records[record.OrderID] = cloneRecord(record)
+
+	if err := manager.advanceWorkflowRecord(context.Background(), nil, &telebot.Chat{ID: 1}, nil, record); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, found, _ := wfStore.Get(context.Background(), record.OrderID)
+	if !found {
+		t.Fatal("record not found")
+	}
+	if got.State != service.StatePaymentPendingExternal {
+		t.Fatalf("state = %s, want PAYMENT_PENDING_EXTERNAL", got.State)
+	}
+
+	intents, _ := piStore.ListByChat(context.Background(), 1, 10)
+	if len(intents) != 1 {
+		t.Fatalf("want 1 intent, got %d", len(intents))
+	}
+	if intents[0].Status != service.PaymentIntentInsufficientFund {
+		t.Fatalf("intent status = %s, want INSUFFICIENT_FUNDS", intents[0].Status)
+	}
+}
+
+func TestInitiatePayment_SuccessCreatesTransferPendingIntent(t *testing.T) {
+	now := time.Now().UTC()
+	wfStore := newMockWorkflowStore()
+	piStore := newMockPaymentIntentStore()
+	exec := &mockPaymentExecutor{result: &service.AutoTransferResult{Reference: "ref-ok", TransferCode: "TRF_123", Status: "pending"}}
+	manager := NewTaskManager(wfStore, DefaultRetryPolicy())
+	manager.now = func() time.Time { return now }
+	manager.SetPaymentDeps(exec, piStore, nil)
+
+	order := service.Order{
+		ID:         "ord-ok",
+		Amount:     "10000.00",
+		CurrencyID: "NGN",
+		CreateDate: strconv.FormatInt(now.UnixMilli(), 10),
+	}
+	record := service.NewOrderWorkflowRecord(2, order, now)
+	record.State = service.StateDetailReady
+	record.AccountNo = "9876543210"
+	record.BankName = "Success Bank"
+	record.OrderAmount = "10000.00"
+	wfStore.records[record.OrderID] = cloneRecord(record)
+
+	if err := manager.advanceWorkflowRecord(context.Background(), nil, &telebot.Chat{ID: 2}, nil, record); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	intents, _ := piStore.ListByChat(context.Background(), 2, 10)
+	if len(intents) != 1 {
+		t.Fatalf("want 1 intent, got %d", len(intents))
+	}
+	if intents[0].Status != service.PaymentIntentTransferPending {
+		t.Fatalf("intent status = %s, want TRANSFER_PENDING", intents[0].Status)
+	}
+	if intents[0].TransferCode != "TRF_123" {
+		t.Fatalf("TransferCode = %s, want TRF_123", intents[0].TransferCode)
+	}
+}
+
+func TestRetryPayment_ResumesWhenBalanceRestored(t *testing.T) {
+	now := time.Now().UTC()
+	wfStore := newMockWorkflowStore()
+	piStore := newMockPaymentIntentStore()
+	exec := &mockPaymentExecutor{result: &service.AutoTransferResult{Reference: "ref-retry", TransferCode: "TRF_retry", Status: "pending"}}
+	manager := NewTaskManager(wfStore, DefaultRetryPolicy())
+	manager.now = func() time.Time { return now }
+	manager.SetPaymentDeps(exec, piStore, nil)
+
+	order := service.Order{
+		ID:         "ord-retry",
+		Amount:     "20000.00",
+		CurrencyID: "NGN",
+		CreateDate: strconv.FormatInt(now.UnixMilli(), 10),
+	}
+	record := service.NewOrderWorkflowRecord(3, order, now)
+	record.State = service.StatePaymentPendingExternal
+	record.AccountNo = "1122334455"
+	record.BankName = "Retry Bank"
+	record.OrderAmount = "20000.00"
+	wfStore.records[record.OrderID] = cloneRecord(record)
+
+	_ = piStore.Create(context.Background(), &service.PaymentIntentRecord{
+		PaymentID:         "pi-1",
+		ChatID:            3,
+		OrderID:           record.OrderID,
+		PaystackReference: "ref-retry",
+		AmountKobo:        2000000,
+		Currency:          "NGN",
+		Status:            service.PaymentIntentInsufficientFund,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	})
+
+	if err := manager.advanceWorkflowRecord(context.Background(), nil, &telebot.Chat{ID: 3}, nil, record); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	intents, _ := piStore.ListByChat(context.Background(), 3, 10)
+	if len(intents) != 1 {
+		t.Fatalf("want 1 intent, got %d", len(intents))
+	}
+	if intents[0].Status != service.PaymentIntentTransferPending {
+		t.Fatalf("intent status = %s, want TRANSFER_PENDING", intents[0].Status)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1", exec.calls)
 	}
 }
