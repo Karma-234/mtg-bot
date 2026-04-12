@@ -25,6 +25,7 @@ type PaymentIntentRecord struct {
 	Currency          string              `json:"currency"`
 	Status            PaymentIntentStatus `json:"status"`
 	LastError         string              `json:"lastError,omitempty"`
+	RetryCount        int                 `json:"retryCount,omitempty"`
 	CreatedAt         time.Time           `json:"createdAt"`
 	UpdatedAt         time.Time           `json:"updatedAt"`
 	NextRetryAt       time.Time           `json:"nextRetryAt,omitempty"`

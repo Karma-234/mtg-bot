@@ -496,6 +496,38 @@ func safePrefix(s string, n int) string {
 	return s[:n]
 }
 
+func isRetryableTransferError(err error) bool {
+	if err == nil || errors.Is(err, service.ErrInsufficientBalance) {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"timeout", "tempor", "connection reset", "eof", "unavailable", "rate limit", "429", "500", "502", "503", "504", "try again"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (m *TaskManager) scheduleIntentRetry(intent *service.PaymentIntentRecord, now time.Time) {
+	intent.RetryCount++
+	intent.NextRetryAt = now.Add(m.retryPolicy.NextDelay(intent.RetryCount))
+	intent.UpdatedAt = now
+}
+
+func (m *TaskManager) clearIntentRetry(intent *service.PaymentIntentRecord, now time.Time) {
+	intent.RetryCount = 0
+	intent.NextRetryAt = time.Time{}
+	intent.UpdatedAt = now
+}
+
+func (m *TaskManager) stopIntentRetry(intent *service.PaymentIntentRecord, now time.Time) {
+	intent.NextRetryAt = time.Time{}
+	intent.UpdatedAt = now
+}
+
 func (m *TaskManager) initiatePayment(ctx context.Context, b *telebot.Bot, chat *telebot.Chat, record *service.OrderWorkflowRecord) error {
 	amtFloat, err := strconv.ParseFloat(record.OrderAmount, 64)
 	if err != nil {
@@ -541,7 +573,7 @@ func (m *TaskManager) initiatePayment(ctx context.Context, b *telebot.Bot, chat 
 		if errors.Is(transferErr, service.ErrInsufficientBalance) {
 			intent.Status = service.PaymentIntentInsufficientFund
 			intent.LastError = transferErr.Error()
-			intent.UpdatedAt = m.now()
+			m.scheduleIntentRetry(intent, m.now())
 			_ = m.paymentStore.Save(ctx, intent)
 			m.notifyState(ctx, b, chat, record,
 				fmt.Sprintf("Insufficient Paystack balance for order %s (%.2f NGN required). Please top up your Paystack balance.",
@@ -550,7 +582,12 @@ func (m *TaskManager) initiatePayment(ctx context.Context, b *telebot.Bot, chat 
 		}
 		intent.Status = service.PaymentIntentTransferFailed
 		intent.LastError = transferErr.Error()
-		intent.UpdatedAt = m.now()
+		now := m.now()
+		if isRetryableTransferError(transferErr) {
+			m.scheduleIntentRetry(intent, now)
+		} else {
+			m.stopIntentRetry(intent, now)
+		}
 		_ = m.paymentStore.Save(ctx, intent)
 		m.notifyState(ctx, b, chat, record, fmt.Sprintf("Transfer failed for order %s: %v", record.OrderID, transferErr))
 		return nil
@@ -558,7 +595,8 @@ func (m *TaskManager) initiatePayment(ctx context.Context, b *telebot.Bot, chat 
 
 	intent.Status = service.PaymentIntentTransferPending
 	intent.TransferCode = result.TransferCode
-	intent.UpdatedAt = m.now()
+	intent.LastError = ""
+	m.clearIntentRetry(intent, m.now())
 	_ = m.paymentStore.Save(ctx, intent)
 	if b != nil {
 		if _, sendErr := b.Send(chat, fmt.Sprintf("Transfer initiated for order %s\nReference: %s\nCode: %s",
@@ -574,12 +612,23 @@ func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot
 	if err != nil {
 		return err
 	}
+	now := m.now()
 	var intent *service.PaymentIntentRecord
 	for _, pi := range intents {
-		if pi.OrderID == record.OrderID && pi.Status == service.PaymentIntentInsufficientFund {
-			intent = pi
-			break
+		if pi.OrderID != record.OrderID {
+			continue
 		}
+		if pi.Status != service.PaymentIntentInsufficientFund && pi.Status != service.PaymentIntentTransferFailed {
+			continue
+		}
+		if !pi.NextRetryAt.IsZero() && now.Before(pi.NextRetryAt) {
+			continue
+		}
+		if pi.Status == service.PaymentIntentTransferFailed && pi.RetryCount >= m.retryPolicy.MaxAttempts && m.retryPolicy.MaxAttempts > 0 {
+			continue
+		}
+		intent = pi
+		break
 	}
 	if intent == nil {
 		return nil
@@ -600,11 +649,19 @@ func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot
 	})
 	if transferErr != nil {
 		if errors.Is(transferErr, service.ErrInsufficientBalance) {
+			intent.Status = service.PaymentIntentInsufficientFund
+			intent.LastError = transferErr.Error()
+			m.scheduleIntentRetry(intent, now)
+			_ = m.paymentStore.Save(ctx, intent)
 			return nil // silently wait; user already notified
 		}
 		intent.Status = service.PaymentIntentTransferFailed
 		intent.LastError = transferErr.Error()
-		intent.UpdatedAt = m.now()
+		if isRetryableTransferError(transferErr) && (m.retryPolicy.MaxAttempts <= 0 || intent.RetryCount < m.retryPolicy.MaxAttempts) {
+			m.scheduleIntentRetry(intent, now)
+		} else {
+			m.stopIntentRetry(intent, now)
+		}
 		_ = m.paymentStore.Save(ctx, intent)
 		m.notifyState(ctx, b, chat, record, fmt.Sprintf("Transfer retry failed for order %s: %v", record.OrderID, transferErr))
 		return nil
@@ -612,7 +669,8 @@ func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot
 
 	intent.Status = service.PaymentIntentTransferPending
 	intent.TransferCode = result.TransferCode
-	intent.UpdatedAt = m.now()
+	intent.LastError = ""
+	m.clearIntentRetry(intent, now)
 	_ = m.paymentStore.Save(ctx, intent)
 	if b != nil {
 		if _, sendErr := b.Send(chat, fmt.Sprintf("Balance restored — transfer re-initiated for order %s\nRef: %s",

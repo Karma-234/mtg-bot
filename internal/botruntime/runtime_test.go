@@ -411,6 +411,12 @@ func TestInitiatePayment_InsufficientFundsKeepsPendingExternal(t *testing.T) {
 	if intents[0].Status != service.PaymentIntentInsufficientFund {
 		t.Fatalf("intent status = %s, want INSUFFICIENT_FUNDS", intents[0].Status)
 	}
+	if intents[0].RetryCount != 1 {
+		t.Fatalf("retry count = %d, want 1", intents[0].RetryCount)
+	}
+	if intents[0].NextRetryAt != now.Add(manager.retryPolicy.NextDelay(1)) {
+		t.Fatalf("next retry = %s, want %s", intents[0].NextRetryAt, now.Add(manager.retryPolicy.NextDelay(1)))
+	}
 }
 
 func TestInitiatePayment_SuccessCreatesTransferPendingIntent(t *testing.T) {
@@ -449,6 +455,12 @@ func TestInitiatePayment_SuccessCreatesTransferPendingIntent(t *testing.T) {
 	if intents[0].TransferCode != "TRF_123" {
 		t.Fatalf("TransferCode = %s, want TRF_123", intents[0].TransferCode)
 	}
+	if intents[0].RetryCount != 0 {
+		t.Fatalf("retry count = %d, want 0", intents[0].RetryCount)
+	}
+	if !intents[0].NextRetryAt.IsZero() {
+		t.Fatalf("next retry = %s, want zero", intents[0].NextRetryAt)
+	}
 }
 
 func TestRetryPayment_ResumesWhenBalanceRestored(t *testing.T) {
@@ -481,8 +493,10 @@ func TestRetryPayment_ResumesWhenBalanceRestored(t *testing.T) {
 		AmountKobo:        2000000,
 		Currency:          "NGN",
 		Status:            service.PaymentIntentInsufficientFund,
+		RetryCount:        1,
 		CreatedAt:         now,
 		UpdatedAt:         now,
+		NextRetryAt:       now,
 	})
 
 	if err := manager.advanceWorkflowRecord(context.Background(), nil, &telebot.Chat{ID: 3}, nil, record); err != nil {
@@ -495,6 +509,156 @@ func TestRetryPayment_ResumesWhenBalanceRestored(t *testing.T) {
 	}
 	if intents[0].Status != service.PaymentIntentTransferPending {
 		t.Fatalf("intent status = %s, want TRANSFER_PENDING", intents[0].Status)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1", exec.calls)
+	}
+	if intents[0].RetryCount != 0 {
+		t.Fatalf("retry count = %d, want 0", intents[0].RetryCount)
+	}
+	if !intents[0].NextRetryAt.IsZero() {
+		t.Fatalf("next retry = %s, want zero", intents[0].NextRetryAt)
+	}
+}
+
+func TestRetryPayment_InsufficientFundsWaitsForNextRetryAt(t *testing.T) {
+	now := time.Now().UTC()
+	wfStore := newMockWorkflowStore()
+	piStore := newMockPaymentIntentStore()
+	exec := &mockPaymentExecutor{result: &service.AutoTransferResult{Reference: "ref-wait", TransferCode: "TRF_wait", Status: "pending"}}
+	manager := NewTaskManager(wfStore, DefaultRetryPolicy())
+	manager.now = func() time.Time { return now }
+	manager.SetPaymentDeps(exec, piStore, nil)
+
+	order := service.Order{ID: "ord-wait", Amount: "20000.00", CurrencyID: "NGN", CreateDate: strconv.FormatInt(now.UnixMilli(), 10)}
+	record := service.NewOrderWorkflowRecord(4, order, now)
+	record.State = service.StatePaymentPendingExternal
+	record.AccountNo = "1122334455"
+	record.BankName = "Retry Bank"
+	record.OrderAmount = "20000.00"
+	wfStore.records[record.OrderID] = cloneRecord(record)
+
+	_ = piStore.Create(context.Background(), &service.PaymentIntentRecord{
+		PaymentID:         "pi-wait",
+		ChatID:            4,
+		OrderID:           record.OrderID,
+		PaystackReference: "ref-wait",
+		AmountKobo:        2000000,
+		Currency:          "NGN",
+		Status:            service.PaymentIntentInsufficientFund,
+		RetryCount:        1,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		NextRetryAt:       now.Add(time.Minute),
+	})
+
+	if err := manager.advanceWorkflowRecord(context.Background(), nil, &telebot.Chat{ID: 4}, nil, record); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exec.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", exec.calls)
+	}
+}
+
+func TestRetryPayment_RecoverableTransferFailureRetriesAndBacksOff(t *testing.T) {
+	now := time.Now().UTC()
+	wfStore := newMockWorkflowStore()
+	piStore := newMockPaymentIntentStore()
+	exec := &mockPaymentExecutor{err: fmt.Errorf("temporary upstream timeout")}
+	manager := NewTaskManager(wfStore, DefaultRetryPolicy())
+	manager.now = func() time.Time { return now }
+	manager.SetPaymentDeps(exec, piStore, nil)
+
+	order := service.Order{ID: "ord-temp", Amount: "20000.00", CurrencyID: "NGN", CreateDate: strconv.FormatInt(now.UnixMilli(), 10)}
+	record := service.NewOrderWorkflowRecord(5, order, now)
+	record.State = service.StatePaymentPendingExternal
+	record.AccountNo = "1122334455"
+	record.BankName = "Retry Bank"
+	record.OrderAmount = "20000.00"
+	wfStore.records[record.OrderID] = cloneRecord(record)
+
+	_ = piStore.Create(context.Background(), &service.PaymentIntentRecord{
+		PaymentID:         "pi-temp",
+		ChatID:            5,
+		OrderID:           record.OrderID,
+		PaystackReference: "ref-temp",
+		AmountKobo:        2000000,
+		Currency:          "NGN",
+		Status:            service.PaymentIntentTransferFailed,
+		RetryCount:        1,
+		LastError:         "temporary upstream timeout",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		NextRetryAt:       now,
+	})
+
+	if err := manager.advanceWorkflowRecord(context.Background(), nil, &telebot.Chat{ID: 5}, nil, record); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	intents, _ := piStore.ListByChat(context.Background(), 5, 10)
+	if len(intents) != 1 {
+		t.Fatalf("want 1 intent, got %d", len(intents))
+	}
+	if intents[0].Status != service.PaymentIntentTransferFailed {
+		t.Fatalf("intent status = %s, want TRANSFER_FAILED", intents[0].Status)
+	}
+	if intents[0].RetryCount != 2 {
+		t.Fatalf("retry count = %d, want 2", intents[0].RetryCount)
+	}
+	if intents[0].NextRetryAt != now.Add(manager.retryPolicy.NextDelay(2)) {
+		t.Fatalf("next retry = %s, want %s", intents[0].NextRetryAt, now.Add(manager.retryPolicy.NextDelay(2)))
+	}
+	if exec.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1", exec.calls)
+	}
+}
+
+func TestRetryPayment_TerminalTransferFailureStopsRetrying(t *testing.T) {
+	now := time.Now().UTC()
+	wfStore := newMockWorkflowStore()
+	piStore := newMockPaymentIntentStore()
+	exec := &mockPaymentExecutor{err: fmt.Errorf("transfer otp required")}
+	manager := NewTaskManager(wfStore, DefaultRetryPolicy())
+	manager.now = func() time.Time { return now }
+	manager.SetPaymentDeps(exec, piStore, nil)
+
+	order := service.Order{ID: "ord-terminal", Amount: "20000.00", CurrencyID: "NGN", CreateDate: strconv.FormatInt(now.UnixMilli(), 10)}
+	record := service.NewOrderWorkflowRecord(6, order, now)
+	record.State = service.StatePaymentPendingExternal
+	record.AccountNo = "1122334455"
+	record.BankName = "Retry Bank"
+	record.OrderAmount = "20000.00"
+	wfStore.records[record.OrderID] = cloneRecord(record)
+
+	_ = piStore.Create(context.Background(), &service.PaymentIntentRecord{
+		PaymentID:         "pi-terminal",
+		ChatID:            6,
+		OrderID:           record.OrderID,
+		PaystackReference: "ref-terminal",
+		AmountKobo:        2000000,
+		Currency:          "NGN",
+		Status:            service.PaymentIntentTransferFailed,
+		RetryCount:        1,
+		LastError:         "transfer otp required",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		NextRetryAt:       now,
+	})
+
+	if err := manager.advanceWorkflowRecord(context.Background(), nil, &telebot.Chat{ID: 6}, nil, record); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	intents, _ := piStore.ListByChat(context.Background(), 6, 10)
+	if len(intents) != 1 {
+		t.Fatalf("want 1 intent, got %d", len(intents))
+	}
+	if intents[0].RetryCount != 1 {
+		t.Fatalf("retry count = %d, want 1", intents[0].RetryCount)
+	}
+	if !intents[0].NextRetryAt.IsZero() {
+		t.Fatalf("next retry = %s, want zero", intents[0].NextRetryAt)
 	}
 	if exec.calls != 1 {
 		t.Fatalf("executor calls = %d, want 1", exec.calls)
