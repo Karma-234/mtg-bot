@@ -12,6 +12,7 @@ import (
 
 	"github.com/karma-234/mtg-bot/internal/bothandlers"
 	"github.com/karma-234/mtg-bot/internal/botruntime"
+	"github.com/karma-234/mtg-bot/internal/providerqueue"
 	"github.com/karma-234/mtg-bot/internal/webhook"
 	"gopkg.in/telebot.v4"
 )
@@ -78,8 +79,8 @@ func main() {
 	}
 	taskManager := botruntime.NewTaskManager(workflowStore, retryPolicy)
 	paymentIntentStore := buildPaymentIntentStore(rdb)
+	providerMarkQueue := buildProviderMarkQueue(rdb)
 	taskManager.SetPaymentDeps(paystackPaymentService, paymentIntentStore, bankCache)
-	taskManager.SetProviderPaidMarker(merchantService)
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
 	commands := []telebot.Command{
@@ -102,8 +103,20 @@ func main() {
 	}
 	webhookMux := http.NewServeMux()
 	webhookMux.Handle("/webhook/paystack", webhook.NewPaystackWebhookHandler(
-		webhookSecret, paymentIntentStore, workflowStore, paystackPaymentService, merchantService, b,
+		webhookSecret, paymentIntentStore, paystackPaymentService, providerMarkQueue, b,
 	))
+
+	workerCtx, cancelWorker := context.WithCancel(context.Background())
+	providerMarkWorker := providerqueue.NewWorker(
+		providerMarkQueue,
+		paymentIntentStore,
+		workflowStore,
+		merchantService,
+		retryPolicy,
+		b,
+		"provider-mark-main",
+	)
+	go providerMarkWorker.Run(workerCtx)
 	go func() {
 		log.Printf("Webhook server listening on :%s", webhookPort)
 		if err := http.ListenAndServe(":"+webhookPort, webhookMux); err != nil && err != http.ErrServerClosed {
@@ -120,6 +133,7 @@ func main() {
 	}()
 	<-done
 	cancelCache()
+	cancelWorker()
 	b.Stop()
 	taskManager.StopAll()
 	log.Println("Bot stopped")

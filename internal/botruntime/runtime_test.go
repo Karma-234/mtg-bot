@@ -3,7 +3,6 @@ package botruntime
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strconv"
 	"sync"
 	"testing"
@@ -29,19 +28,6 @@ func (m *mockPaymentExecutor) AutoTransferToOrder(ctx context.Context, bankLooku
 type mockPaymentIntentStore struct {
 	mu      sync.Mutex
 	records map[string]*service.PaymentIntentRecord
-}
-
-type mockProviderPaidMarker struct {
-	mu    sync.Mutex
-	err   error
-	calls int
-}
-
-func (m *mockProviderPaidMarker) MarkOrderPaid(opts service.MarkOrderPaidRequest) (*http.Response, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.calls++
-	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, m.err
 }
 
 func newMockPaymentIntentStore() *mockPaymentIntentStore {
@@ -687,64 +673,5 @@ func TestRetryPayment_TerminalTransferFailureStopsRetrying(t *testing.T) {
 	}
 	if exec.calls != 1 {
 		t.Fatalf("executor calls = %d, want 1", exec.calls)
-	}
-}
-
-func TestRetryProviderMarkPaid_SuccessAdvancesWorkflow(t *testing.T) {
-	now := time.Now().UTC()
-	wfStore := newMockWorkflowStore()
-	piStore := newMockPaymentIntentStore()
-	marker := &mockProviderPaidMarker{}
-	manager := NewTaskManager(wfStore, DefaultRetryPolicy())
-	manager.now = func() time.Time { return now }
-	manager.SetPaymentDeps(&mockPaymentExecutor{}, piStore, nil)
-	manager.SetProviderPaidMarker(marker)
-
-	order := service.Order{ID: "ord-provider", Amount: "20000.00", CurrencyID: "NGN", CreateDate: strconv.FormatInt(now.UnixMilli(), 10)}
-	record := service.NewOrderWorkflowRecord(7, order, now)
-	record.State = service.StatePaymentPendingExternal
-	record.AccountNo = "1122334455"
-	record.BankName = "Retry Bank"
-	record.OrderAmount = "20000.00"
-	wfStore.records[record.OrderID] = cloneRecord(record)
-
-	_ = piStore.Create(context.Background(), &service.PaymentIntentRecord{
-		PaymentID:         "pi-provider",
-		ChatID:            7,
-		OrderID:           record.OrderID,
-		PaystackReference: "ref-provider",
-		AmountKobo:        2000000,
-		Currency:          "NGN",
-		Status:            service.PaymentIntentProviderFailed,
-		RetryCount:        1,
-		LastError:         "provider temporarily unavailable",
-		CreatedAt:         now,
-		UpdatedAt:         now,
-		NextRetryAt:       now,
-	})
-
-	if err := manager.advanceWorkflowRecord(context.Background(), nil, &telebot.Chat{ID: 7}, nil, record); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	updatedRecord, found, _ := wfStore.Get(context.Background(), record.OrderID)
-	if !found {
-		t.Fatal("workflow record not found")
-	}
-	if updatedRecord.State != service.StatePaid {
-		t.Fatalf("workflow state = %s, want PAID", updatedRecord.State)
-	}
-	intents, _ := piStore.ListByChat(context.Background(), 7, 10)
-	if len(intents) != 1 {
-		t.Fatalf("want 1 intent, got %d", len(intents))
-	}
-	if intents[0].Status != service.PaymentIntentProviderPaid {
-		t.Fatalf("intent status = %s, want PROVIDER_MARKED_PAID", intents[0].Status)
-	}
-	if intents[0].RetryCount != 0 || !intents[0].NextRetryAt.IsZero() {
-		t.Fatalf("retry metadata not cleared: count=%d next=%s", intents[0].RetryCount, intents[0].NextRetryAt)
-	}
-	if marker.calls != 1 {
-		t.Fatalf("marker calls = %d, want 1", marker.calls)
 	}
 }

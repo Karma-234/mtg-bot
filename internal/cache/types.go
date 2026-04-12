@@ -43,3 +43,25 @@ type PaymentIntentStore interface {
 	MarkWebhookProcessed(ctx context.Context, eventID string, ttl time.Duration) (bool, error)
 	ListByChat(ctx context.Context, chatID int64, limit int) ([]*service.PaymentIntentRecord, error)
 }
+
+type ProviderMarkJob struct {
+	OrderID           string    `json:"orderId"`
+	PaymentReference  string    `json:"paymentReference"`
+	ChatID            int64     `json:"chatId"`
+	Attempt           int       `json:"attempt"`
+	EarliestProcessAt time.Time `json:"earliestProcessAt"`
+	EnqueuedAt        time.Time `json:"enqueuedAt"`
+}
+
+type ProviderMarkMessage struct {
+	ID       string
+	Job      ProviderMarkJob
+	Consumer string
+}
+
+type ProviderMarkQueue interface {
+	Enqueue(ctx context.Context, job ProviderMarkJob) error
+	Dequeue(ctx context.Context, consumer string, block time.Duration) (*ProviderMarkMessage, error)
+	Ack(ctx context.Context, messageID string) error
+	Requeue(ctx context.Context, job ProviderMarkJob, delay time.Duration) error
+}

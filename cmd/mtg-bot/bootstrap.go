@@ -133,6 +133,10 @@ func buildPaymentIntentStore(rdb *redis.Client) cache.PaymentIntentStore {
 	return cache.NewRedisPaymentIntentStore(rdb)
 }
 
+func buildProviderMarkQueue(rdb *redis.Client) cache.ProviderMarkQueue {
+	return cache.NewRedisProviderMarkQueue(rdb)
+}
+
 func buildPaystackService() *service.PaystackService {
 	key := os.Getenv("PMNT_PRV_KEY")
 	if key == "" {

@@ -18,11 +18,6 @@ import (
 	"gopkg.in/telebot.v4"
 )
 
-// OrderPaidMarker marks an order as paid on the P2P provider side.
-type OrderPaidMarker interface {
-	MarkOrderPaid(opts service.MarkOrderPaidRequest) (*http.Response, error)
-}
-
 type TransferVerifier interface {
 	VerifyTransfer(reference string) (*service.TransferResponse, error)
 }
@@ -51,9 +46,8 @@ func VerifySignature(body []byte, signature, secret string) bool {
 func NewPaystackWebhookHandler(
 	secret string,
 	intentStore cache.PaymentIntentStore,
-	workflowStore cache.WorkflowStore,
 	verifier TransferVerifier,
-	orderMarker OrderPaidMarker,
+	providerQueue cache.ProviderMarkQueue,
 	bot *telebot.Bot,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +91,7 @@ func NewPaystackWebhookHandler(
 
 		switch evt.Event {
 		case "transfer.success":
-			handleTransferSuccess(ctx, ref, intentStore, workflowStore, verifier, orderMarker, bot)
+			handleTransferSuccess(ctx, ref, intentStore, verifier, providerQueue, bot)
 		case "transfer.failed", "transfer.reversed":
 			handleTransferFailed(ctx, ref, evt.Event, intentStore, bot)
 		}
@@ -110,9 +104,8 @@ func handleTransferSuccess(
 	ctx context.Context,
 	ref string,
 	intentStore cache.PaymentIntentStore,
-	workflowStore cache.WorkflowStore,
 	verifier TransferVerifier,
-	orderMarker OrderPaidMarker,
+	providerQueue cache.ProviderMarkQueue,
 	bot *telebot.Bot,
 ) {
 	intent, found, err := intentStore.GetByReference(ctx, ref)
@@ -167,56 +160,29 @@ func handleTransferSuccess(
 		return
 	}
 
-	if orderMarker != nil {
-		resp, markErr := orderMarker.MarkOrderPaid(service.MarkOrderPaidRequest{
-			OrderID:     intent.OrderID,
-			PaymentType: "transfer",
-			PaymentID:   intent.PaystackReference,
-		})
-		if resp != nil {
-			resp.Body.Close()
-		}
-		now := time.Now().UTC()
-		if markErr != nil {
+	if providerQueue != nil {
+		if err := providerQueue.Enqueue(ctx, cache.ProviderMarkJob{
+			OrderID:          intent.OrderID,
+			PaymentReference: intent.PaystackReference,
+			ChatID:           intent.ChatID,
+			Attempt:          0,
+		}); err != nil {
 			intent.Status = service.PaymentIntentProviderFailed
-			intent.LastError = markErr.Error()
-			intent.RetryCount++
-			intent.NextRetryAt = now.Add(15 * time.Second)
-			log.Printf("webhook: MarkOrderPaid failed for order %s: %v", intent.OrderID, markErr)
-			intent.UpdatedAt = now
+			intent.LastError = fmt.Sprintf("enqueue provider mark failed: %v", err)
+			intent.RetryCount = 1
+			intent.NextRetryAt = time.Now().UTC().Add(15 * time.Second)
+			intent.UpdatedAt = time.Now().UTC()
 			_ = intentStore.Save(ctx, intent)
+			log.Printf("webhook: enqueue provider mark failed for order %s: %v", intent.OrderID, err)
 			return
-		}
-		intent.Status = service.PaymentIntentProviderPaid
-		intent.LastError = ""
-		intent.RetryCount = 0
-		intent.NextRetryAt = time.Time{}
-		intent.UpdatedAt = now
-		if err := intentStore.Save(ctx, intent); err != nil {
-			log.Printf("webhook: failed to save provider-paid intent ref=%s: %v", ref, err)
-			return
-		}
-	}
-
-	record, found, err := workflowStore.Get(ctx, intent.OrderID)
-	if err != nil || !found {
-		log.Printf("webhook: workflow record not found for order %s (err=%v)", intent.OrderID, err)
-	} else if record.State == service.StatePaymentPendingExternal {
-		nextState, applyErr := service.ApplyOrderEvent(record.State, service.EventPaymentConfirmed)
-		if applyErr == nil {
-			record.State = nextState
-			record.UpdatedAt = time.Now().UTC()
-			if _, saveErr := workflowStore.SaveIfState(ctx, record, service.StatePaymentPendingExternal); saveErr != nil {
-				log.Printf("webhook: failed to advance workflow for order %s: %v", intent.OrderID, saveErr)
-			}
 		}
 	}
 
 	if bot != nil {
 		chat := &telebot.Chat{ID: intent.ChatID}
-		msg := fmt.Sprintf("Payment confirmed for order %s\nRef: %s", intent.OrderID, ref)
+		msg := fmt.Sprintf("Transfer confirmed for order %s\nRef: %s\nAwaiting provider confirmation.", intent.OrderID, ref)
 		if _, sendErr := bot.Send(chat, msg); sendErr != nil {
-			log.Printf("webhook: notify failed for chat %d: %v", intent.ChatID, sendErr)
+			log.Printf("webhook: transfer success notify failed for chat %d: %v", intent.ChatID, sendErr)
 		}
 	}
 }
