@@ -120,3 +120,20 @@ func buildUserStateCache(rdb *redis.Client) cache.UserStateCache {
 func buildRetryPolicy() botruntime.RetryPolicy {
 	return botruntime.DefaultRetryPolicy()
 }
+
+func buildPaystackService() *service.PaystackService {
+	key := os.Getenv("PMNT_PRV_KEY")
+	if key == "" {
+		log.Fatal("PMNT_PRV_KEY is not set")
+	}
+	return &service.PaystackService{
+		Client: http.Client{
+			Timeout: 15 * time.Second,
+			Transport: &service.PaystackInterceptor{
+				Base:      http.DefaultTransport,
+				SecretKey: key,
+			},
+		},
+		BaseURL: service.PaystackBaseURL,
+	}
+}
