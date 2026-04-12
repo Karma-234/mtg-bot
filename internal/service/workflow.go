@@ -59,7 +59,7 @@ var orderTransitions = map[OrderState]map[OrderEvent]OrderState{
 	},
 	StatePaymentPendingExternal: {
 		EventPaymentConfirmed: StatePaid,
-		EventOrderExpired: StateTimedOut,
+		EventOrderExpired:     StateTimedOut,
 	},
 }
 
