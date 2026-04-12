@@ -32,17 +32,35 @@ func main() {
 	redisConfig := buildRedisConfigFromEnv()
 	rdb := buildRedisClient(redisConfig)
 	bankCache := buildBankCache(rdb)
-	go func() {
+	cacheCtx, cancelCache := context.WithCancel(context.Background())
+	defer cancelCache()
+	refreshBanks := func(ctx context.Context) {
 		banks, err := paystackPaymentService.ListBanks("NG")
 		if err != nil {
-			log.Printf("Failed to pre-populate bank cache: %v", err)
+			log.Printf("Failed to refresh bank cache: %v", err)
 			return
 		}
-		if err := bankCache.SetBanks(context.Background(), "NG", banks.Data, 24*time.Hour); err != nil {
+		if err := bankCache.SetBanks(ctx, "NG", banks.Data, 24*time.Hour); err != nil {
 			log.Printf("Failed to cache bank list: %v", err)
 			return
 		}
-		log.Printf("Bank list cached: %d banks", len(banks.Data))
+		log.Printf("Bank list cache refreshed: %d banks", len(banks.Data))
+	}
+
+	refreshBanks(cacheCtx)
+
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				refreshBanks(cacheCtx)
+			case <-cacheCtx.Done():
+				return
+			}
+		}
 	}()
 
 	ordersCache := buildOrdersCache(rdb)
@@ -74,6 +92,7 @@ func main() {
 		b.Start()
 	}()
 	<-done
+	cancelCache()
 	b.Stop()
 	taskManager.StopAll()
 	log.Println("Bot stopped")
