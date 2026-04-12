@@ -18,17 +18,17 @@ type BankLookup interface {
 }
 
 type AutoTransferRequest struct {
-	OrderID        string
-	ChatID         int64
-	Provider       string
-	Beneficiary    string
-	AccountNumber  string
-	BankName       string
-	AmountKobo     int64
-	Currency       string
-	Reference      string
-	Reason         string
-	Country        string
+	OrderID       string
+	ChatID        int64
+	Provider      string
+	Beneficiary   string
+	AccountNumber string
+	BankName      string
+	AmountKobo    int64
+	Currency      string
+	Reference     string
+	Reason        string
+	Country       string
 }
 
 type AutoTransferResult struct {
