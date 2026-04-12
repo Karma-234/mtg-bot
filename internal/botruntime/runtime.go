@@ -626,29 +626,21 @@ func (m *TaskManager) initiatePayment(ctx context.Context, b *telebot.Bot, chat 
 }
 
 func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot.Bot, chat *telebot.Chat, record *service.OrderWorkflowRecord) error {
-	intents, err := m.paymentStore.ListByChat(ctx, record.ChatID, 50)
+	intent, found, err := m.paymentStore.GetByOrderID(ctx, record.OrderID)
 	if err != nil {
 		return err
 	}
-	now := m.now()
-	var intent *service.PaymentIntentRecord
-	for _, pi := range intents {
-		if pi.OrderID != record.OrderID {
-			continue
-		}
-		if pi.Status != service.PaymentIntentInsufficientFund && pi.Status != service.PaymentIntentTransferFailed {
-			continue
-		}
-		if !pi.NextRetryAt.IsZero() && now.Before(pi.NextRetryAt) {
-			continue
-		}
-		if pi.Status == service.PaymentIntentTransferFailed && pi.RetryCount >= m.retryPolicy.MaxAttempts && m.retryPolicy.MaxAttempts > 0 {
-			continue
-		}
-		intent = pi
-		break
+	if !found {
+		return nil
 	}
-	if intent == nil {
+	now := m.now()
+	if intent.Status != service.PaymentIntentInsufficientFund && intent.Status != service.PaymentIntentTransferFailed {
+		return nil
+	}
+	if !intent.NextRetryAt.IsZero() && now.Before(intent.NextRetryAt) {
+		return nil
+	}
+	if intent.Status == service.PaymentIntentTransferFailed && intent.RetryCount >= m.retryPolicy.MaxAttempts && m.retryPolicy.MaxAttempts > 0 {
 		return nil
 	}
 
@@ -700,30 +692,22 @@ func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot
 }
 
 func (m *TaskManager) retryProviderMarkPaid(ctx context.Context, b *telebot.Bot, chat *telebot.Chat, record *service.OrderWorkflowRecord) error {
-	intents, err := m.paymentStore.ListByChat(ctx, record.ChatID, 50)
+	intent, found, err := m.paymentStore.GetByOrderID(ctx, record.OrderID)
 	if err != nil {
 		return err
 	}
+	if !found {
+		return nil
+	}
 
 	now := m.now()
-	var intent *service.PaymentIntentRecord
-	for _, pi := range intents {
-		if pi.OrderID != record.OrderID {
-			continue
-		}
-		if pi.Status != service.PaymentIntentProviderFailed {
-			continue
-		}
-		if !pi.NextRetryAt.IsZero() && now.Before(pi.NextRetryAt) {
-			continue
-		}
-		if m.retryPolicy.MaxAttempts > 0 && pi.RetryCount >= m.retryPolicy.MaxAttempts {
-			continue
-		}
-		intent = pi
-		break
+	if intent.Status != service.PaymentIntentProviderFailed {
+		return nil
 	}
-	if intent == nil {
+	if !intent.NextRetryAt.IsZero() && now.Before(intent.NextRetryAt) {
+		return nil
+	}
+	if m.retryPolicy.MaxAttempts > 0 && intent.RetryCount >= m.retryPolicy.MaxAttempts {
 		return nil
 	}
 

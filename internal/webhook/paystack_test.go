@@ -52,6 +52,18 @@ func (s *mockIntentStore) GetByReference(ctx context.Context, ref string) (*serv
 	return &cp, true, nil
 }
 
+func (s *mockIntentStore) GetByOrderID(ctx context.Context, orderID string) (*service.PaymentIntentRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.intents {
+		if r.OrderID == orderID {
+			cp := *r
+			return &cp, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
 func (s *mockIntentStore) Save(ctx context.Context, intent *service.PaymentIntentRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

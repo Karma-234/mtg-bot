@@ -65,6 +65,17 @@ func TestRedisPaymentIntentStore_CreateGetSaveList(t *testing.T) {
 		t.Fatalf("stored orderID = %s, want %s", stored.OrderID, intent.OrderID)
 	}
 
+	byOrder, found, err := store.GetByOrderID(ctx, intent.OrderID)
+	if err != nil {
+		t.Fatalf("GetByOrderID returned error: %v", err)
+	}
+	if !found {
+		t.Fatalf("GetByOrderID did not find intent")
+	}
+	if byOrder.PaystackReference != intent.PaystackReference {
+		t.Fatalf("GetByOrderID reference = %s, want %s", byOrder.PaystackReference, intent.PaystackReference)
+	}
+
 	stored.Status = service.PaymentIntentTransferPending
 	stored.TransferCode = "TRF_test"
 	stored.UpdatedAt = now.Add(2 * time.Minute)
@@ -81,6 +92,37 @@ func TestRedisPaymentIntentStore_CreateGetSaveList(t *testing.T) {
 	}
 	if list[0].Status != service.PaymentIntentTransferPending {
 		t.Fatalf("ListByChat status = %s, want %s", list[0].Status, service.PaymentIntentTransferPending)
+	}
+}
+
+func TestRedisPaymentIntentStore_GetByOrderID_PrunesMissingReference(t *testing.T) {
+	store, client, cleanup := newTestRedisPaymentIntentStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	intent := testIntent(now, 12, "order-prune", "ref-prune")
+	if err := store.Create(ctx, intent); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if err := client.Del(ctx, store.paymentIntentKey(intent.PaystackReference)).Err(); err != nil {
+		t.Fatalf("Del payment intent key returned error: %v", err)
+	}
+
+	_, found, err := store.GetByOrderID(ctx, intent.OrderID)
+	if err != nil {
+		t.Fatalf("GetByOrderID returned error: %v", err)
+	}
+	if found {
+		t.Fatalf("GetByOrderID found deleted intent, want false")
+	}
+
+	orderKeyExists, err := client.Exists(ctx, store.paymentOrderIndexKey(intent.OrderID)).Result()
+	if err != nil {
+		t.Fatalf("Exists order key returned error: %v", err)
+	}
+	if orderKeyExists != 0 {
+		t.Fatalf("order index key still exists, expected prune")
 	}
 }
 

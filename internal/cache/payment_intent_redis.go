@@ -31,6 +31,10 @@ func (s *RedisPaymentIntentStore) paymentWebhookEventKey(eventID string) string 
 	return fmt.Sprintf("mtg:payment:webhook:event:%s", eventID)
 }
 
+func (s *RedisPaymentIntentStore) paymentOrderIndexKey(orderID string) string {
+	return fmt.Sprintf("mtg:payment:intent:order:%s", orderID)
+}
+
 func (s *RedisPaymentIntentStore) Create(ctx context.Context, intent *service.PaymentIntentRecord) error {
 	if intent == nil {
 		return fmt.Errorf("payment intent is nil")
@@ -52,12 +56,39 @@ func (s *RedisPaymentIntentStore) Create(ctx context.Context, intent *service.Pa
 		return fmt.Errorf("payment intent already exists for reference %s", intent.PaystackReference)
 	}
 
+	if err := s.rdb.Set(ctx, s.paymentOrderIndexKey(intent.OrderID), intent.PaystackReference, 0).Err(); err != nil {
+		return err
+	}
+
 	score := float64(intent.CreatedAt.Unix())
 	if !intent.UpdatedAt.IsZero() {
 		score = float64(intent.UpdatedAt.Unix())
 	}
 
 	return s.rdb.ZAdd(ctx, s.paymentChatIndexKey(intent.ChatID), redis.Z{Score: score, Member: intent.PaystackReference}).Err()
+}
+
+func (s *RedisPaymentIntentStore) GetByOrderID(ctx context.Context, orderID string) (*service.PaymentIntentRecord, bool, error) {
+	reference, err := s.rdb.Get(ctx, s.paymentOrderIndexKey(orderID)).Result()
+	if err == redis.Nil {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+
+	intent, found, err := s.GetByReference(ctx, reference)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found {
+		if err := s.rdb.Del(ctx, s.paymentOrderIndexKey(orderID)).Err(); err != nil {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
+
+	return intent, true, nil
 }
 
 func (s *RedisPaymentIntentStore) GetByReference(ctx context.Context, reference string) (*service.PaymentIntentRecord, bool, error) {
@@ -91,6 +122,10 @@ func (s *RedisPaymentIntentStore) Save(ctx context.Context, intent *service.Paym
 	}
 
 	if err := s.rdb.Set(ctx, s.paymentIntentKey(intent.PaystackReference), payload, 0).Err(); err != nil {
+		return err
+	}
+
+	if err := s.rdb.Set(ctx, s.paymentOrderIndexKey(intent.OrderID), intent.PaystackReference, 0).Err(); err != nil {
 		return err
 	}
 
