@@ -121,6 +121,10 @@ func buildRetryPolicy() botruntime.RetryPolicy {
 	return botruntime.DefaultRetryPolicy()
 }
 
+func buildBankCache(rdb *redis.Client) cache.BankCache {
+	return cache.NewRedisBankCache(rdb)
+}
+
 func buildPaystackService() *service.PaystackService {
 	key := os.Getenv("PMNT_PRV_KEY")
 	if key == "" {

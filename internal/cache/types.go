@@ -24,3 +24,8 @@ type UserStateCache interface {
 	SetSelectedDuration(ctx context.Context, chatID int64, d time.Duration, ttl time.Duration) error
 	GetSelectedDuration(ctx context.Context, chatID int64) (time.Duration, bool, error)
 }
+
+type BankCache interface {
+	GetBanks(ctx context.Context, country string) ([]service.BankEntry, bool, error)
+	SetBanks(ctx context.Context, country string, banks []service.BankEntry, ttl time.Duration) error
+}

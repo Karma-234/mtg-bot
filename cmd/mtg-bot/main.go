@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/karma-234/mtg-bot/internal/bothandlers"
 	"github.com/karma-234/mtg-bot/internal/botruntime"
@@ -25,8 +27,24 @@ func main() {
 	merchantConfig := selectEnvironment(prod, dev)
 	client := buildHTTPClient(*merchantConfig)
 	merchantService := buildMerchantService(*merchantConfig, client)
+	paystackPaymentService := buildPaystackService()
+
 	redisConfig := buildRedisConfigFromEnv()
 	rdb := buildRedisClient(redisConfig)
+	bankCache := buildBankCache(rdb)
+	go func() {
+		banks, err := paystackPaymentService.ListBanks("NG")
+		if err != nil {
+			log.Printf("Failed to pre-populate bank cache: %v", err)
+			return
+		}
+		if err := bankCache.SetBanks(context.Background(), "NG", banks.Data, 24*time.Hour); err != nil {
+			log.Printf("Failed to cache bank list: %v", err)
+			return
+		}
+		log.Printf("Bank list cached: %d banks", len(banks.Data))
+	}()
+
 	ordersCache := buildOrdersCache(rdb)
 	workflowStore := buildWorkflowStore(rdb)
 	userStateCache := buildUserStateCache(rdb)
