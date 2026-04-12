@@ -102,7 +102,7 @@ func main() {
 	}
 	webhookMux := http.NewServeMux()
 	webhookMux.Handle("/webhook/paystack", webhook.NewPaystackWebhookHandler(
-		webhookSecret, paymentIntentStore, workflowStore, merchantService, b,
+		webhookSecret, paymentIntentStore, workflowStore, paystackPaymentService, merchantService, b,
 	))
 	go func() {
 		log.Printf("Webhook server listening on :%s", webhookPort)

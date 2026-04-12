@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/karma-234/mtg-bot/internal/cache"
@@ -20,6 +21,10 @@ import (
 // OrderPaidMarker marks an order as paid on the P2P provider side.
 type OrderPaidMarker interface {
 	MarkOrderPaid(opts service.MarkOrderPaidRequest) (*http.Response, error)
+}
+
+type TransferVerifier interface {
+	VerifyTransfer(reference string) (*service.TransferResponse, error)
 }
 
 type paystackEvent struct {
@@ -47,6 +52,7 @@ func NewPaystackWebhookHandler(
 	secret string,
 	intentStore cache.PaymentIntentStore,
 	workflowStore cache.WorkflowStore,
+	verifier TransferVerifier,
 	orderMarker OrderPaidMarker,
 	bot *telebot.Bot,
 ) http.HandlerFunc {
@@ -91,7 +97,7 @@ func NewPaystackWebhookHandler(
 
 		switch evt.Event {
 		case "transfer.success":
-			handleTransferSuccess(ctx, ref, intentStore, workflowStore, orderMarker, bot)
+			handleTransferSuccess(ctx, ref, intentStore, workflowStore, verifier, orderMarker, bot)
 		case "transfer.failed", "transfer.reversed":
 			handleTransferFailed(ctx, ref, evt.Event, intentStore, bot)
 		}
@@ -105,6 +111,7 @@ func handleTransferSuccess(
 	ref string,
 	intentStore cache.PaymentIntentStore,
 	workflowStore cache.WorkflowStore,
+	verifier TransferVerifier,
 	orderMarker OrderPaidMarker,
 	bot *telebot.Bot,
 ) {
@@ -112,6 +119,45 @@ func handleTransferSuccess(
 	if err != nil || !found {
 		log.Printf("webhook: transfer.success - intent not found for ref %s (err=%v)", ref, err)
 		return
+	}
+
+	if verifier != nil {
+		verifyResp, verifyErr := verifier.VerifyTransfer(ref)
+		if verifyErr != nil {
+			intent.LastError = fmt.Sprintf("verify transfer failed: %v", verifyErr)
+			intent.UpdatedAt = time.Now().UTC()
+			_ = intentStore.Save(ctx, intent)
+			log.Printf("webhook: verify transfer failed for ref %s: %v", ref, verifyErr)
+			return
+		}
+		if verifyResp.Data.Reference != intent.PaystackReference {
+			intent.LastError = fmt.Sprintf("verify mismatch: reference=%s", verifyResp.Data.Reference)
+			intent.UpdatedAt = time.Now().UTC()
+			_ = intentStore.Save(ctx, intent)
+			log.Printf("webhook: verify reference mismatch for ref %s: got %s", ref, verifyResp.Data.Reference)
+			return
+		}
+		if !strings.EqualFold(verifyResp.Data.Status, "success") {
+			intent.LastError = fmt.Sprintf("verify mismatch: status=%s", verifyResp.Data.Status)
+			intent.UpdatedAt = time.Now().UTC()
+			_ = intentStore.Save(ctx, intent)
+			log.Printf("webhook: verify status mismatch for ref %s: got %s", ref, verifyResp.Data.Status)
+			return
+		}
+		if verifyResp.Data.Amount != intent.AmountKobo {
+			intent.LastError = fmt.Sprintf("verify mismatch: amount=%d", verifyResp.Data.Amount)
+			intent.UpdatedAt = time.Now().UTC()
+			_ = intentStore.Save(ctx, intent)
+			log.Printf("webhook: verify amount mismatch for ref %s: got %d want %d", ref, verifyResp.Data.Amount, intent.AmountKobo)
+			return
+		}
+		if !strings.EqualFold(verifyResp.Data.Currency, intent.Currency) {
+			intent.LastError = fmt.Sprintf("verify mismatch: currency=%s", verifyResp.Data.Currency)
+			intent.UpdatedAt = time.Now().UTC()
+			_ = intentStore.Save(ctx, intent)
+			log.Printf("webhook: verify currency mismatch for ref %s: got %s want %s", ref, verifyResp.Data.Currency, intent.Currency)
+			return
+		}
 	}
 
 	intent.Status = service.PaymentIntentTransferSuccess
