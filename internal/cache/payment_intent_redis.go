@@ -48,10 +48,15 @@ func (s *RedisPaymentIntentStore) Create(ctx context.Context, intent *service.Pa
 		return err
 	}
 
-	created, err := s.rdb.SetNX(ctx, s.paymentIntentKey(intent.PaystackReference), payload, 0).Result()
-	if err != nil {
+	// created, err := s.rdb.SetNX(ctx, s.paymentIntentKey(intent.PaystackReference), payload, 0).Result()
+	status, err := s.rdb.SetArgs(ctx, s.paymentIntentKey(intent.PaystackReference), payload, redis.SetArgs{
+		Mode: "NX",
+		TTL:  0,
+	}).Result()
+	if err != nil && err != redis.Nil {
 		return err
 	}
+	created := status == "OK" && err == nil
 	if !created {
 		return fmt.Errorf("payment intent already exists for reference %s", intent.PaystackReference)
 	}
@@ -145,7 +150,15 @@ func (s *RedisPaymentIntentStore) MarkWebhookProcessed(ctx context.Context, even
 		ttl = 24 * time.Hour
 	}
 
-	applied, err := s.rdb.SetNX(ctx, s.paymentWebhookEventKey(eventID), "1", ttl).Result()
+	// applied, err := s.rdb.SetNX(ctx, s.paymentWebhookEventKey(eventID), "1", ttl).Result()
+	status, err := s.rdb.SetArgs(ctx, s.paymentWebhookEventKey(eventID), "1", redis.SetArgs{
+		Mode: "NX",
+		TTL:  ttl,
+	}).Result()
+	if err != nil && err != redis.Nil {
+		return false, err
+	}
+	applied := status == "OK" && err == nil
 	if err != nil {
 		return false, err
 	}

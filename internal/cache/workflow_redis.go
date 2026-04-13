@@ -48,7 +48,15 @@ func (s *RedisWorkflowStore) CreateIfAbsent(ctx context.Context, record *service
 		return false, err
 	}
 
-	created, err := s.rdb.SetNX(ctx, s.workflowKey(record.OrderID), payload, s.workflowTTL(record)).Result()
+	// created, err := s.rdb.SetNX(ctx, s.workflowKey(record.OrderID), payload, s.workflowTTL(record)).Result()
+	status, err := s.rdb.SetArgs(ctx, s.workflowKey(record.OrderID), payload, redis.SetArgs{
+		Mode: "NX",
+		TTL:  s.workflowTTL(record),
+	}).Result()
+	if err != nil && err != redis.Nil {
+		return false, err
+	}
+	created := status == "OK" && err == nil
 	if err != nil {
 		return false, err
 	}
