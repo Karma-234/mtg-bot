@@ -147,9 +147,10 @@ func (q *RedisProviderMarkQueue) ensureGroup(ctx context.Context) error {
 }
 
 func (q *RedisProviderMarkQueue) promoteDue(ctx context.Context, now time.Time) error {
-	entries, err := q.rdb.ZRangeByScore(ctx, q.delayedKey, &redis.ZRangeBy{
-		Min:    "-inf",
-		Max:    strconv.FormatInt(now.UnixMilli(), 10),
+	entries, err := q.rdb.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
+		Key:    q.delayedKey,
+		Start:  "-inf",
+		Stop:   strconv.FormatInt(now.UnixMilli(), 10),
 		Offset: 0,
 		Count:  100,
 	}).Result()
@@ -160,7 +161,8 @@ func (q *RedisProviderMarkQueue) promoteDue(ctx context.Context, now time.Time) 
 		return nil
 	}
 
-	for _, payload := range entries {
+	for _, entry := range entries {
+		payload := entry.Member.(string)
 		if err := q.rdb.ZRem(ctx, q.delayedKey, payload).Err(); err != nil {
 			return err
 		}
