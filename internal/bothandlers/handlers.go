@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/karma-234/mtg-bot/internal/botruntime"
@@ -116,12 +117,13 @@ func RegisterPaymentHandlers(
 		if len(intents) == 0 {
 			return ctx.Send("No payment records found.")
 		}
-		msg := "Recent payments:\n"
+		var msg strings.Builder
+		msg.WriteString("Recent payments:\n")
 		for _, pi := range intents {
-			msg += fmt.Sprintf("  Order: %s | Status: %s | Amount: %.2f NGN | Ref: %s\n",
+			fmt.Fprintf(&msg, "  Order: %s | Status: %s | Amount: %.2f NGN | Ref: %s\n",
 				pi.OrderID, pi.Status, float64(pi.AmountKobo)/100, pi.PaystackReference)
 		}
-		return ctx.Send(msg)
+		return ctx.Send(msg.String())
 	})
 
 	b.Handle("/fund", func(ctx telebot.Context) error {
