@@ -235,6 +235,12 @@ func makeEventBody(event, ref string) []byte {
 	return b
 }
 
+func makeWebhookRequest(method string, body []byte) *http.Request {
+	req := httptest.NewRequest(method, "/webhook/paystack", bytes.NewReader(body))
+	req.RemoteAddr = paystackIP1 + ":443"
+	return req
+}
+
 // ---- tests ----
 
 func TestVerifySignature_CorrectSecretMatches(t *testing.T) {
@@ -274,7 +280,7 @@ func TestWebhookHandler_TransferSuccess_AdvancesWorkflow(t *testing.T) {
 	handler := NewPaystackWebhookHandler(secret, intentStore, verifier, queue, nil)
 
 	body := makeEventBody("transfer.success", ref)
-	req := httptest.NewRequest(http.MethodPost, "/webhook/paystack", bytes.NewReader(body))
+	req := makeWebhookRequest(http.MethodPost, body)
 	req.Header.Set("x-paystack-signature", makeSignature(body, secret))
 	rr := httptest.NewRecorder()
 
@@ -326,7 +332,7 @@ func TestWebhookHandler_TransferSuccess_ProviderFailureLeavesWorkflowPending(t *
 	handler := NewPaystackWebhookHandler(secret, intentStore, verifier, queue, nil)
 
 	body := makeEventBody("transfer.success", ref)
-	req := httptest.NewRequest(http.MethodPost, "/webhook/paystack", bytes.NewReader(body))
+	req := makeWebhookRequest(http.MethodPost, body)
 	req.Header.Set("x-paystack-signature", makeSignature(body, secret))
 	rr := httptest.NewRecorder()
 
@@ -377,7 +383,7 @@ func TestWebhookHandler_DuplicateEvent_IsIdempotent(t *testing.T) {
 	body := makeEventBody("transfer.success", ref)
 	sig := makeSignature(body, secret)
 
-	req1 := httptest.NewRequest(http.MethodPost, "/webhook/paystack", bytes.NewReader(body))
+	req1 := makeWebhookRequest(http.MethodPost, body)
 	req1.Header.Set("x-paystack-signature", sig)
 	rr1 := httptest.NewRecorder()
 	handler(rr1, req1)
@@ -387,7 +393,7 @@ func TestWebhookHandler_DuplicateEvent_IsIdempotent(t *testing.T) {
 
 	savesAfterFirst := intentStore.saveCalls
 
-	req2 := httptest.NewRequest(http.MethodPost, "/webhook/paystack", bytes.NewReader(body))
+	req2 := makeWebhookRequest(http.MethodPost, body)
 	req2.Header.Set("x-paystack-signature", sig)
 	rr2 := httptest.NewRecorder()
 	handler(rr2, req2)
@@ -416,7 +422,7 @@ func TestWebhookHandler_TransferSuccess_VerifyAmountMismatchBlocksCompletion(t *
 	handler := NewPaystackWebhookHandler(secret, intentStore, verifier, queue, nil)
 
 	body := makeEventBody("transfer.success", ref)
-	req := httptest.NewRequest(http.MethodPost, "/webhook/paystack", bytes.NewReader(body))
+	req := makeWebhookRequest(http.MethodPost, body)
 	req.Header.Set("x-paystack-signature", makeSignature(body, secret))
 	rr := httptest.NewRecorder()
 
@@ -450,7 +456,7 @@ func TestWebhookHandler_TransferSuccess_VerifyCurrencyMismatchBlocksCompletion(t
 	handler := NewPaystackWebhookHandler(secret, intentStore, verifier, queue, nil)
 
 	body := makeEventBody("transfer.success", ref)
-	req := httptest.NewRequest(http.MethodPost, "/webhook/paystack", bytes.NewReader(body))
+	req := makeWebhookRequest(http.MethodPost, body)
 	req.Header.Set("x-paystack-signature", makeSignature(body, secret))
 	rr := httptest.NewRecorder()
 
@@ -468,5 +474,54 @@ func TestWebhookHandler_TransferSuccess_VerifyCurrencyMismatchBlocksCompletion(t
 	}
 	if len(queue.jobs) != 0 {
 		t.Fatalf("queued jobs = %d, want 0", len(queue.jobs))
+	}
+}
+
+func TestWebhookEventID_UsesDataIDWhenPresent(t *testing.T) {
+	evt := paystackEvent{Event: "transfer.success"}
+	evt.Data.ID = 12345
+	evt.Data.Reference = "ref-ignored"
+
+	id := webhookEventID(evt)
+	if id != "transfer.success:12345" {
+		t.Fatalf("event id = %s, want transfer.success:12345", id)
+	}
+}
+
+func TestWebhookEventID_FallsBackToReference(t *testing.T) {
+	evt := paystackEvent{Event: "transfer.success"}
+	evt.Data.Reference = "ref-abc"
+
+	id := webhookEventID(evt)
+	if id != "transfer.success:ref-abc" {
+		t.Fatalf("event id = %s, want transfer.success:ref-abc", id)
+	}
+}
+
+func TestHandleTransferFailed_IgnoresLateFailedAfterSuccess(t *testing.T) {
+	now := time.Now().UTC()
+	store := newMockIntentStore()
+	ref := "late-failed-ref"
+
+	_ = store.Create(context.Background(), &service.PaymentIntentRecord{
+		PaymentID:         "pi-late-failed",
+		ChatID:            55,
+		OrderID:           "order-late-failed",
+		PaystackReference: ref,
+		AmountKobo:        1000,
+		Currency:          "NGN",
+		Status:            service.PaymentIntentTransferSuccess,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	})
+
+	handleTransferFailed(context.Background(), ref, "transfer.failed", store, nil)
+
+	intent, found, _ := store.GetByReference(context.Background(), ref)
+	if !found {
+		t.Fatal("intent not found")
+	}
+	if intent.Status != service.PaymentIntentTransferSuccess {
+		t.Fatalf("intent status = %s, want TRANSFER_SUCCESS", intent.Status)
 	}
 }

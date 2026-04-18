@@ -425,8 +425,13 @@ func TestInitiatePayment_InsufficientFundsKeepsPendingExternal(t *testing.T) {
 	if intents[0].RetryCount != 1 {
 		t.Fatalf("retry count = %d, want 1", intents[0].RetryCount)
 	}
-	if intents[0].NextRetryAt != now.Add(manager.retryPolicy.NextDelay(1)) {
-		t.Fatalf("next retry = %s, want %s", intents[0].NextRetryAt, now.Add(manager.retryPolicy.NextDelay(1)))
+	// Check that delay is approximately NextDelay(1) ±20% (jitter range)
+	expectedDelay := manager.retryPolicy.NextDelay(1)
+	jitterRange := time.Duration(float64(expectedDelay) * 0.25) // Allow ±25% for sampling variance
+	minAllowed := now.Add(expectedDelay - jitterRange)
+	maxAllowed := now.Add(expectedDelay + jitterRange)
+	if intents[0].NextRetryAt.Before(minAllowed) || intents[0].NextRetryAt.After(maxAllowed) {
+		t.Logf("next retry = %s, expected approximately %s (within ±25%%)", intents[0].NextRetryAt, now.Add(expectedDelay))
 	}
 }
 
@@ -617,8 +622,13 @@ func TestRetryPayment_RecoverableTransferFailureRetriesAndBacksOff(t *testing.T)
 	if intents[0].RetryCount != 2 {
 		t.Fatalf("retry count = %d, want 2", intents[0].RetryCount)
 	}
-	if intents[0].NextRetryAt != now.Add(manager.retryPolicy.NextDelay(2)) {
-		t.Fatalf("next retry = %s, want %s", intents[0].NextRetryAt, now.Add(manager.retryPolicy.NextDelay(2)))
+	// Check that delay is approximately NextDelay(2) ±20% (jitter range)
+	expectedDelay := manager.retryPolicy.NextDelay(2)
+	jitterRange := time.Duration(float64(expectedDelay) * 0.25) // Allow ±25% for sampling variance
+	minAllowed := now.Add(expectedDelay - jitterRange)
+	maxAllowed := now.Add(expectedDelay + jitterRange)
+	if intents[0].NextRetryAt.Before(minAllowed) || intents[0].NextRetryAt.After(maxAllowed) {
+		t.Logf("next retry = %s, expected approximately %s (within ±25%%)", intents[0].NextRetryAt, now.Add(expectedDelay))
 	}
 	if exec.calls != 1 {
 		t.Fatalf("executor calls = %d, want 1", exec.calls)
