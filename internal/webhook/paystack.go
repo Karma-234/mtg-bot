@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,16 +26,10 @@ const (
 )
 
 func isValidPaystackIP(remoteAddr string) bool {
-	// Extract IP (remoteAddr can be in format "ip:port")
 	ip := strings.Split(remoteAddr, ":")[0]
 
 	validIPs := []string{paystackIP1, paystackIP2, paystackIP3}
-	for _, validIP := range validIPs {
-		if ip == validIP {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(validIPs, ip)
 }
 
 type TransferVerifier interface {
