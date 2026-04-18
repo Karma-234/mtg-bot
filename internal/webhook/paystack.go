@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/karma-234/mtg-bot/internal/cache"
+	"github.com/karma-234/mtg-bot/internal/observability"
 	"github.com/karma-234/mtg-bot/internal/service"
 	"gopkg.in/telebot.v4"
 )
@@ -48,7 +49,13 @@ type paystackEvent struct {
 	} `json:"data"`
 }
 
-// VerifySignature checks the Paystack webhook HMAC-SHA512 signature.
+func webhookEventID(evt paystackEvent) string {
+	if evt.Data.ID > 0 {
+		return fmt.Sprintf("%s:%d", evt.Event, evt.Data.ID)
+	}
+	return fmt.Sprintf("%s:%s", evt.Event, evt.Data.Reference)
+}
+
 func VerifySignature(body []byte, signature, secret string) bool {
 	mac := hmac.New(sha512.New, []byte(secret))
 	mac.Write(body)
@@ -65,49 +72,44 @@ func NewPaystackWebhookHandler(
 	bot *telebot.Bot,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+		start := time.Now()
+		observability.Global().WebhookCount.Inc()
 
-		if !isValidPaystackIP(r.RemoteAddr) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		// Validate request and extract payload
+		evt, statusCode, err := validateAndParsWebhookRequest(r, secret)
 		if err != nil {
-			http.Error(w, "failed to read body", http.StatusBadRequest)
-			return
-		}
-		defer r.Body.Close()
-
-		if secret != "" && !VerifySignature(body, r.Header.Get("x-paystack-signature"), secret) {
-			http.Error(w, "invalid signature", http.StatusUnauthorized)
-			return
-		}
-
-		var evt paystackEvent
-		if err := json.Unmarshal(body, &evt); err != nil {
-			http.Error(w, "invalid payload", http.StatusBadRequest)
+			observability.Global().WebhookErrors.Inc()
+			http.Error(w, err.Error(), statusCode)
+			observability.Global().WebhookLatencyMS.RecordDuration(start)
 			return
 		}
 
 		ctx := r.Context()
 		ref := evt.Data.Reference
-		eventID := fmt.Sprintf("%s:%s", evt.Event, ref)
+		eventID := webhookEventID(evt)
 
 		processed, err := intentStore.MarkWebhookProcessed(ctx, eventID, 48*time.Hour)
 		if err != nil {
-			log.Printf("webhook: idempotency check failed for %s: %v", eventID, err)
+			observability.Global().WebhookErrors.Inc()
+			observability.Error("webhook_idempotency_check_failed", observability.LogFields{
+				Component: "webhook",
+				Extra: map[string]interface{}{
+					"event_id": eventID,
+				},
+				Error: err,
+			})
 			http.Error(w, "internal error", http.StatusInternalServerError)
+			observability.Global().WebhookLatencyMS.RecordDuration(start)
 			return
 		}
 		if !processed {
+			// Already processed this event (idempotent); skip and return OK
+			observability.Global().WebhookLatencyMS.RecordDuration(start)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
+		// Dispatch event to appropriate handler
 		switch evt.Event {
 		case "transfer.success":
 			handleTransferSuccess(ctx, ref, intentStore, verifier, providerQueue, bot)
@@ -115,10 +117,47 @@ func NewPaystackWebhookHandler(
 			handleTransferFailed(ctx, ref, evt.Event, intentStore, bot)
 		}
 
+		observability.Global().WebhookLatencyMS.RecordDuration(start)
 		w.WriteHeader(http.StatusOK)
 	}
 }
 
+// validateAndParsWebhookRequest validates HTTP method, IP, signature, and parses JSON payload.
+// Returns parsed event, HTTP status code, and error (if any).
+func validateAndParsWebhookRequest(r *http.Request, secret string) (paystackEvent, int, error) {
+	// Method validation
+	if r.Method != http.MethodPost {
+		return paystackEvent{}, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed")
+	}
+
+	// IP whitelist validation
+	if !isValidPaystackIP(r.RemoteAddr) {
+		return paystackEvent{}, http.StatusForbidden, fmt.Errorf("forbidden")
+	}
+
+	// Body read and signature verification
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return paystackEvent{}, http.StatusBadRequest, fmt.Errorf("failed to read body")
+	}
+	defer r.Body.Close()
+
+	if secret != "" && !VerifySignature(body, r.Header.Get("x-paystack-signature"), secret) {
+		return paystackEvent{}, http.StatusUnauthorized, fmt.Errorf("invalid signature")
+	}
+
+	// JSON parsing
+	var evt paystackEvent
+	if err := json.Unmarshal(body, &evt); err != nil {
+		return paystackEvent{}, http.StatusBadRequest, fmt.Errorf("invalid payload")
+	}
+
+	return evt, http.StatusOK, nil
+}
+
+// handleTransferSuccess processes transfer.success webhooks.
+// Updates payment intent status, enqueues provider mark job for async completion.
+// On verification failure, records error and stores state (no retry by polling).
 func handleTransferSuccess(
 	ctx context.Context,
 	ref string,
@@ -206,6 +245,10 @@ func handleTransferSuccess(
 	}
 }
 
+// handleTransferFailed processes transfer.failed and transfer.reversed webhooks.
+// Updates payment intent to failed state and notifies user.
+// Guards against late transfer.failed events arriving after transfer.success (e.g., network delay).
+// Out-of-order events are ignored if intent is already settled (TRANSFER_SUCCESS or PROVIDER_PAID).
 func handleTransferFailed(
 	ctx context.Context,
 	ref, eventType string,
@@ -215,6 +258,10 @@ func handleTransferFailed(
 	intent, found, err := intentStore.GetByReference(ctx, ref)
 	if err != nil || !found {
 		log.Printf("webhook: %s - intent not found for ref %s (err=%v)", eventType, ref, err)
+		return
+	}
+	if eventType == "transfer.failed" && (intent.Status == service.PaymentIntentTransferSuccess || intent.Status == service.PaymentIntentProviderPaid) {
+		log.Printf("webhook: ignored late transfer.failed for settled intent ref=%s status=%s", ref, intent.Status)
 		return
 	}
 
