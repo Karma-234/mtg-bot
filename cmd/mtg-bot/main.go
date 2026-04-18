@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/karma-234/mtg-bot/internal/bothandlers"
 	"github.com/karma-234/mtg-bot/internal/botruntime"
+	"github.com/karma-234/mtg-bot/internal/providerqueue"
+	"github.com/karma-234/mtg-bot/internal/webhook"
 	"gopkg.in/telebot.v4"
 )
 
@@ -76,7 +79,7 @@ func main() {
 	}
 	taskManager := botruntime.NewTaskManager(workflowStore, retryPolicy)
 	paymentIntentStore := buildPaymentIntentStore(rdb)
-	// providerMarkQueue := buildProviderMarkQueue(rdb)
+	providerMarkQueue := buildProviderMarkQueue(rdb)
 	taskManager.SetPaymentDeps(paystackPaymentService, paymentIntentStore, bankCache)
 	me := b.Me
 	log.Printf("Bot username: %s", me.Username)
@@ -93,33 +96,38 @@ func main() {
 	bothandlers.RegisterHandlers(b, taskManager, merchantService, userStateCache, ordersCache)
 	bothandlers.RegisterPaymentHandlers(b, paystackPaymentService, paymentIntentStore)
 
-	// webhookSecret := os.Getenv("PAYSTACK_WEBHOOK_SECRET")
-	// webhookPort := os.Getenv("WEBHOOK_PORT")
-	// if webhookPort == "" {
-	// 	webhookPort = "8080"
-	// }
-	// webhookMux := http.NewServeMux()
-	// webhookMux.Handle("/webhook/paystack", webhook.NewPaystackWebhookHandler(
-	// 	webhookSecret, paymentIntentStore, paystackPaymentService, providerMarkQueue, b,
-	// ))
+	webhookSecret := os.Getenv("PAYSTACK_WEBHOOK_SECRET")
+	webhookPort := os.Getenv("WEBHOOK_PORT")
+	if webhookPort == "" {
+		webhookPort = "8080"
+	}
+	webhookMux := http.NewServeMux()
+	webhookMux.Handle("/webhook/paystack", webhook.NewPaystackWebhookHandler(
+		webhookSecret, paymentIntentStore, paystackPaymentService, providerMarkQueue, b,
+	))
 
-	// workerCtx, cancelWorker := context.WithCancel(context.Background())
-	// providerMarkWorker := providerqueue.NewWorker(
-	// 	providerMarkQueue,
-	// 	paymentIntentStore,
-	// 	workflowStore,
-	// 	merchantService,
-	// 	retryPolicy,
-	// 	b,
-	// 	"provider-mark-main",
-	// )
-	// go providerMarkWorker.Run(workerCtx)
-	// go func() {
-	// 	log.Printf("Webhook server listening on :%s", webhookPort)
-	// 	if err := http.ListenAndServe(":"+webhookPort, webhookMux); err != nil && err != http.ErrServerClosed {
-	// 		log.Printf("Webhook server error: %v", err)
-	// 	}
-	// }()
+	workerCtx, cancelWorker := context.WithCancel(context.Background())
+	providerMarkWorker := providerqueue.NewWorker(
+		providerMarkQueue,
+		paymentIntentStore,
+		workflowStore,
+		merchantService,
+		retryPolicy,
+		b,
+		"provider-mark-main",
+	)
+	go providerMarkWorker.Run(workerCtx)
+	webhookServer := &http.Server{
+		Addr:    ":" + webhookPort,
+		Handler: webhookMux,
+	}
+	webhookErrCh := make(chan error, 1)
+	go func() {
+		log.Printf("Webhook server listening on :%s", webhookPort)
+		if err := webhookServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			webhookErrCh <- err
+		}
+	}()
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
@@ -128,9 +136,25 @@ func main() {
 		log.Printf("Bot started with username: %s", me.Username)
 		b.Start()
 	}()
-	<-done
+
+	select {
+	case sig := <-done:
+		log.Printf("Shutdown signal received: %s", sig.String())
+	case serverErr := <-webhookErrCh:
+		log.Printf("Webhook server terminated unexpectedly: %v", serverErr)
+	}
+
+	signal.Stop(done)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := webhookServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Webhook server shutdown error: %v", err)
+	} else {
+		log.Printf("Webhook server shut down gracefully")
+	}
+
+	cancelWorker()
 	cancelCache()
-	// cancelWorker()
 	b.Stop()
 	taskManager.StopAll()
 	log.Println("Bot stopped")
