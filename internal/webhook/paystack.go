@@ -18,6 +18,25 @@ import (
 	"gopkg.in/telebot.v4"
 )
 
+const (
+	paystackIP1 = "152.31.139.75"
+	paystackIP2 = "252.49.173.169"
+	paystackIP3 = "352.214.14.220"
+)
+
+func isValidPaystackIP(remoteAddr string) bool {
+	// Extract IP (remoteAddr can be in format "ip:port")
+	ip := strings.Split(remoteAddr, ":")[0]
+
+	validIPs := []string{paystackIP1, paystackIP2, paystackIP3}
+	for _, validIP := range validIPs {
+		if ip == validIP {
+			return true
+		}
+	}
+	return false
+}
+
 type TransferVerifier interface {
 	VerifyTransfer(reference string) (*service.TransferResponse, error)
 }
@@ -53,6 +72,11 @@ func NewPaystackWebhookHandler(
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if !isValidPaystackIP(r.RemoteAddr) {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 
