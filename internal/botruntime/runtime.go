@@ -13,15 +13,18 @@ import (
 	"time"
 
 	"github.com/karma-234/mtg-bot/internal/cache"
+	"github.com/karma-234/mtg-bot/internal/observability"
 	"github.com/karma-234/mtg-bot/internal/service"
 	"gopkg.in/telebot.v4"
 )
 
+// MerchantOrdersProvider defines the interface for fetching orders from merchant services.
 type MerchantOrdersProvider interface {
 	GetPendingOrders(opts *service.OrderQueryRequest) (*service.OrdersResponse, error)
 	GetOrderDetail(opts service.SingleOrderQueryRequest) (*service.OrderDetailResponse, error)
 }
 
+// PaymentExecutor defines the interface for executing payment transfers.
 type PaymentExecutor interface {
 	AutoTransferToOrder(ctx context.Context, bankLookup service.BankLookup, req service.AutoTransferRequest) (*service.AutoTransferResult, error)
 }
@@ -33,18 +36,22 @@ type scheduledTask struct {
 	deadline time.Time
 }
 
+// TaskManager orchestrates poll-based order discovery, workflow state transitions, and payment initiation.
+// It maintains consistent retry policy semantics with exponential backoff and jitter.
+// Reconciliation is ownership-aware: polling remains mandatory for discovery; completion
+// side effects are delegated to webhook + worker for event-driven handlers.
 type TaskManager struct {
-	tasks         map[int64]scheduledTask
-	nextTaskID    uint64
-	processing    map[string]struct{}
-	workflowStore cache.WorkflowStore
-	retryPolicy   RetryPolicy
-	now           func() time.Time
-	mu            sync.RWMutex
+	tasks         map[int64]scheduledTask // Active polling tasks by chat ID
+	nextTaskID    uint64                  // Monotonic task ID counter
+	processing    map[string]struct{}     // Lock set for per-order exclusive processing
+	workflowStore cache.WorkflowStore     // Persistent workflow state store
+	retryPolicy   RetryPolicy             // Unified retry configuration (backoff, exhaustion)
+	now           func() time.Time        // Mock-friendly time source
+	mu            sync.RWMutex            // Protects tasks and nextTaskID
 
-	paymentExec  PaymentExecutor
-	paymentStore cache.PaymentIntentStore
-	bankLookup   service.BankLookup
+	paymentExec  PaymentExecutor          // Transfer execution service
+	paymentStore cache.PaymentIntentStore // Payment intent state store
+	bankLookup   service.BankLookup       // Bank metadata provider
 }
 
 func NewTaskManager(workflowStore cache.WorkflowStore, retryPolicy RetryPolicy) *TaskManager {
@@ -111,10 +118,13 @@ func (m *TaskManager) Schedule(b *telebot.Bot, duration time.Duration, chat *tel
 		for {
 			select {
 			case <-ticker.C:
+				start := time.Now()
 				log.Printf("Executing scheduled task for chat %s", chat.Username)
 				if err := m.pollAndProcess(ctx, b, chat, srv, ordersCache, cacheTTL); err != nil {
 					log.Printf("Workflow poll failed for chat %d: %v", chat.ID, err)
 				}
+				observability.Global().PollCycleDurationMS.RecordDuration(start)
+				observability.Global().PollCycleCount.Inc()
 			case <-ctx.Done():
 				log.Printf("Task for chat %v Completed", chat.Username)
 				if _, err := b.Send(chat, "Task for user "+chat.Username+" completed"); err != nil {
@@ -296,7 +306,9 @@ func (m *TaskManager) advanceWorkflowRecord(ctx context.Context, b *telebot.Bot,
 		if m.paymentExec == nil || m.paymentStore == nil {
 			return nil
 		}
-		return m.retryPaymentIfInsufficient(ctx, b, chat, record)
+		// Polling remains mandatory for discovery/reconciliation. Completion and provider
+		// confirmation side effects are event-owned (webhook + provider worker).
+		return m.reconcilePaymentPendingExternal(ctx, b, chat, record)
 	default:
 		return nil
 	}
@@ -496,33 +508,26 @@ func safePrefix(s string, n int) string {
 	return s[:n]
 }
 
+// isRetryableTransferError uses unified error classification from RetryPolicy.
 func isRetryableTransferError(err error) bool {
-	if err == nil || errors.Is(err, service.ErrInsufficientBalance) {
-		return false
-	}
-
-	message := strings.ToLower(err.Error())
-	for _, marker := range []string{"timeout", "tempor", "connection reset", "eof", "unavailable", "rate limit", "429", "500", "502", "503", "504", "try again"} {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-
-	return false
+	return ClassifyTransferError(err) == ErrorTypeTransient
 }
 
+// scheduleIntentRetry schedules the next retry attempt with exponential backoff + jitter.
 func (m *TaskManager) scheduleIntentRetry(intent *service.PaymentIntentRecord, now time.Time) {
 	intent.RetryCount++
 	intent.NextRetryAt = now.Add(m.retryPolicy.NextDelay(intent.RetryCount))
 	intent.UpdatedAt = now
 }
 
+// clearIntentRetry resets retry state (success path).
 func (m *TaskManager) clearIntentRetry(intent *service.PaymentIntentRecord, now time.Time) {
 	intent.RetryCount = 0
 	intent.NextRetryAt = time.Time{}
 	intent.UpdatedAt = now
 }
 
+// stopIntentRetry halts retry attempts without clearing counts (terminal error path).
 func (m *TaskManager) stopIntentRetry(intent *service.PaymentIntentRecord, now time.Time) {
 	intent.NextRetryAt = time.Time{}
 	intent.UpdatedAt = now
@@ -554,6 +559,18 @@ func (m *TaskManager) initiatePayment(ctx context.Context, b *telebot.Bot, chat 
 		log.Printf("initiatePayment: failed to create intent for order %s: %v", record.OrderID, err)
 		return nil
 	}
+	observability.Global().PaymentIntentCreated.Inc()
+	observability.Info("payment_intent_created", observability.LogFields{
+		Component: "runtime",
+		OrderID:   record.OrderID,
+		ChatID:    record.ChatID,
+		Intent:    intent.PaymentID,
+		Extra: map[string]any{
+			"amount_kobo": amountKobo,
+			"currency":    "NGN",
+			"reference":   ref,
+		},
+	})
 
 	result, transferErr := m.paymentExec.AutoTransferToOrder(ctx, m.bankLookup, service.AutoTransferRequest{
 		OrderID:       record.OrderID,
@@ -607,7 +624,11 @@ func (m *TaskManager) initiatePayment(ctx context.Context, b *telebot.Bot, chat 
 	return nil
 }
 
-func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot.Bot, chat *telebot.Chat, record *service.OrderWorkflowRecord) error {
+func shouldReconcilePaymentIntent(status service.PaymentIntentStatus) bool {
+	return status == service.PaymentIntentInsufficientFund || status == service.PaymentIntentTransferFailed
+}
+
+func (m *TaskManager) reconcilePaymentPendingExternal(ctx context.Context, b *telebot.Bot, chat *telebot.Chat, record *service.OrderWorkflowRecord) error {
 	intent, found, err := m.paymentStore.GetByOrderID(ctx, record.OrderID)
 	if err != nil {
 		return err
@@ -616,13 +637,10 @@ func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot
 		return nil
 	}
 	now := m.now()
-	if intent.Status != service.PaymentIntentInsufficientFund && intent.Status != service.PaymentIntentTransferFailed {
-		return nil
-	}
-	if !intent.NextRetryAt.IsZero() && now.Before(intent.NextRetryAt) {
-		return nil
-	}
-	if intent.Status == service.PaymentIntentTransferFailed && intent.RetryCount >= m.retryPolicy.MaxAttempts && m.retryPolicy.MaxAttempts > 0 {
+
+	// Event-driven completion statuses are owned by webhook + worker and should not
+	// be mutated by poll-based reconciliation.
+	if !m.isEligibleForReconciliation(intent, now) {
 		return nil
 	}
 
@@ -640,25 +658,11 @@ func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot
 		Country:       "NG",
 	})
 	if transferErr != nil {
-		if errors.Is(transferErr, service.ErrInsufficientBalance) {
-			intent.Status = service.PaymentIntentInsufficientFund
-			intent.LastError = transferErr.Error()
-			m.scheduleIntentRetry(intent, now)
-			_ = m.paymentStore.Save(ctx, intent)
-			return nil // silently wait; user already notified
-		}
-		intent.Status = service.PaymentIntentTransferFailed
-		intent.LastError = transferErr.Error()
-		if isRetryableTransferError(transferErr) && (m.retryPolicy.MaxAttempts <= 0 || intent.RetryCount < m.retryPolicy.MaxAttempts) {
-			m.scheduleIntentRetry(intent, now)
-		} else {
-			m.stopIntentRetry(intent, now)
-		}
-		_ = m.paymentStore.Save(ctx, intent)
-		m.notifyState(ctx, b, chat, record, fmt.Sprintf("Transfer retry failed for order %s: %v", record.OrderID, transferErr))
+		m.handleReconciliationError(ctx, b, chat, record, intent, transferErr, now)
 		return nil
 	}
 
+	// Transfer succeeded; update intent and notify user
 	intent.Status = service.PaymentIntentTransferPending
 	intent.TransferCode = result.TransferCode
 	intent.LastError = ""
@@ -671,6 +675,53 @@ func (m *TaskManager) retryPaymentIfInsufficient(ctx context.Context, b *telebot
 		}
 	}
 	return nil
+}
+
+// isEligibleForReconciliation checks if an intent can be retried by polling.
+func (m *TaskManager) isEligibleForReconciliation(intent *service.PaymentIntentRecord, now time.Time) bool {
+	// Only retry if status is in reconciliation-friendly states
+	if !shouldReconcilePaymentIntent(intent.Status) {
+		return false
+	}
+	// Don't retry if next attempt is scheduled in future
+	if !intent.NextRetryAt.IsZero() && now.Before(intent.NextRetryAt) {
+		return false
+	}
+	// Don't retry if already exhausted max attempts
+	if intent.Status == service.PaymentIntentTransferFailed && m.retryPolicy.IsExhausted(intent.RetryCount) {
+		return false
+	}
+	return true
+}
+
+// handleReconciliationError processes transfer errors during reconciliation.
+func (m *TaskManager) handleReconciliationError(
+	ctx context.Context,
+	b *telebot.Bot,
+	chat *telebot.Chat,
+	record *service.OrderWorkflowRecord,
+	intent *service.PaymentIntentRecord,
+	transferErr error,
+	now time.Time,
+) {
+	intent.LastError = transferErr.Error()
+	intent.Status = service.PaymentIntentTransferFailed
+
+	if errors.Is(transferErr, service.ErrInsufficientBalance) {
+		intent.Status = service.PaymentIntentInsufficientFund
+		m.scheduleIntentRetry(intent, now)
+		_ = m.paymentStore.Save(ctx, intent)
+		return // Silently wait; user already notified during initial attempt
+	}
+
+	// Handle transient vs terminal errors
+	if isRetryableTransferError(transferErr) {
+		m.scheduleIntentRetry(intent, now)
+	} else {
+		m.stopIntentRetry(intent, now)
+	}
+	_ = m.paymentStore.Save(ctx, intent)
+	m.notifyState(ctx, b, chat, record, fmt.Sprintf("Transfer retry failed for order %s: %v", record.OrderID, transferErr))
 }
 
 func (m *TaskManager) StopAll() {
