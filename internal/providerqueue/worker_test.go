@@ -18,6 +18,8 @@ type mockQueue struct {
 	messages []*cache.ProviderMarkMessage
 	acks     []string
 	requeued []cache.ProviderMarkJob
+	dlqJobs  []cache.ProviderMarkJob
+	dlqWhy   []string
 }
 
 func (q *mockQueue) Enqueue(ctx context.Context, job cache.ProviderMarkJob) error {
@@ -50,6 +52,14 @@ func (q *mockQueue) Requeue(ctx context.Context, job cache.ProviderMarkJob, dela
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.requeued = append(q.requeued, job)
+	return nil
+}
+
+func (q *mockQueue) DeadLetter(ctx context.Context, job cache.ProviderMarkJob, reason string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.dlqJobs = append(q.dlqJobs, job)
+	q.dlqWhy = append(q.dlqWhy, reason)
 	return nil
 }
 
@@ -235,6 +245,48 @@ func TestWorkerProcessMessageFailureRequeues(t *testing.T) {
 		t.Fatalf("requeue count = %d, want 1", len(queue.requeued))
 	}
 	if len(queue.acks) != 1 || queue.acks[0] != "msg-2" {
+		t.Fatalf("ack mismatch: %#v", queue.acks)
+	}
+}
+
+func TestWorkerProcessMessageFailureExhaustedMovesToDLQ(t *testing.T) {
+	now := time.Now().UTC()
+	queue := &mockQueue{}
+	intentStore := newMockIntentStore()
+	workflowStore := newMockWorkflowStore()
+	marker := &mockMarker{err: fmt.Errorf("temporary provider error")}
+	retryPolicy := botruntime.RetryPolicy{BaseBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, MaxAttempts: 1}
+	worker := NewWorker(queue, intentStore, workflowStore, marker, retryPolicy, nil, "worker-c")
+
+	intent := &service.PaymentIntentRecord{PaymentID: "pi-3", ChatID: 3, OrderID: "order-3", PaystackReference: "ref-3", Status: service.PaymentIntentTransferSuccess, AmountKobo: 2000, Currency: "NGN", CreatedAt: now, UpdatedAt: now}
+	_ = intentStore.Create(context.Background(), intent)
+	_ = workflowStore.Save(context.Background(), &service.OrderWorkflowRecord{OrderID: "order-3", ChatID: 3, State: service.StatePaymentPendingExternal, CreatedAt: now, UpdatedAt: now})
+
+	msg := &cache.ProviderMarkMessage{ID: "msg-3", Job: cache.ProviderMarkJob{OrderID: "order-3", PaymentReference: "ref-3", ChatID: 3}}
+	if err := worker.processMessage(context.Background(), msg); err != nil {
+		t.Fatalf("processMessage returned error: %v", err)
+	}
+
+	updated, found, _ := intentStore.GetByReference(context.Background(), "ref-3")
+	if !found {
+		t.Fatal("intent not found")
+	}
+	if updated.Status != service.PaymentIntentProviderFailed {
+		t.Fatalf("intent status = %v, want PROVIDER_MARK_FAILED", updated.Status)
+	}
+	if updated.RetryCount != 1 {
+		t.Fatalf("retry count = %d, want 1", updated.RetryCount)
+	}
+	if !updated.NextRetryAt.IsZero() {
+		t.Fatalf("next retry should be zero at exhaustion, got %s", updated.NextRetryAt)
+	}
+	if len(queue.requeued) != 0 {
+		t.Fatalf("requeue count = %d, want 0", len(queue.requeued))
+	}
+	if len(queue.dlqJobs) != 1 {
+		t.Fatalf("dlq count = %d, want 1", len(queue.dlqJobs))
+	}
+	if len(queue.acks) != 1 || queue.acks[0] != "msg-3" {
 		t.Fatalf("ack mismatch: %#v", queue.acks)
 	}
 }

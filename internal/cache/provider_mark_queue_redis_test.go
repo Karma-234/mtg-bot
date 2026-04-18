@@ -92,3 +92,65 @@ func TestRedisProviderMarkQueue_RequeueDelayed(t *testing.T) {
 		t.Fatalf("OrderID = %s, want %s", msg.Job.OrderID, job.OrderID)
 	}
 }
+
+func TestRedisProviderMarkQueue_ReclaimsPendingForConsumer(t *testing.T) {
+	queue, cleanup := newTestProviderMarkQueue(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	job := ProviderMarkJob{
+		OrderID:          "order-reclaim",
+		PaymentReference: "ref-reclaim",
+		ChatID:           303,
+	}
+	if err := queue.Enqueue(ctx, job); err != nil {
+		t.Fatalf("Enqueue returned error: %v", err)
+	}
+
+	first, err := queue.Dequeue(ctx, "consumer-c", 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("first Dequeue returned error: %v", err)
+	}
+	if first == nil {
+		t.Fatal("first Dequeue returned nil message")
+	}
+
+	second, err := queue.Dequeue(ctx, "consumer-c", 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("second Dequeue returned error: %v", err)
+	}
+	if second == nil {
+		t.Fatal("expected pending message to be reclaimed for same consumer")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("reclaimed message id = %s, want %s", second.ID, first.ID)
+	}
+
+	if err := queue.Ack(ctx, second.ID); err != nil {
+		t.Fatalf("Ack returned error: %v", err)
+	}
+}
+
+func TestRedisProviderMarkQueue_DeadLetter(t *testing.T) {
+	queue, cleanup := newTestProviderMarkQueue(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	job := ProviderMarkJob{
+		OrderID:          "order-dlq",
+		PaymentReference: "ref-dlq",
+		ChatID:           404,
+		Attempt:          5,
+	}
+	if err := queue.DeadLetter(ctx, job, "exhausted"); err != nil {
+		t.Fatalf("DeadLetter returned error: %v", err)
+	}
+
+	count, err := queue.rdb.XLen(ctx, queue.dlqKey).Result()
+	if err != nil {
+		t.Fatalf("XLen returned error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("dlq stream length = %d, want 1", count)
+	}
+}

@@ -15,6 +15,7 @@ import (
 const (
 	defaultProviderMarkStreamKey  = "mtg:provider_mark:stream"
 	defaultProviderMarkDelayedKey = "mtg:provider_mark:delayed"
+	defaultProviderMarkDLQKey     = "mtg:provider_mark:dlq"
 	defaultProviderMarkGroup      = "provider-mark-workers"
 )
 
@@ -22,7 +23,11 @@ type RedisProviderMarkQueue struct {
 	rdb        *redis.Client
 	streamKey  string
 	delayedKey string
+	dlqKey     string
 	group      string
+
+	pendingMinIdle    time.Duration
+	pendingClaimCount int64
 }
 
 func NewRedisProviderMarkQueue(rdb *redis.Client) *RedisProviderMarkQueue {
@@ -30,7 +35,11 @@ func NewRedisProviderMarkQueue(rdb *redis.Client) *RedisProviderMarkQueue {
 		rdb:        rdb,
 		streamKey:  defaultProviderMarkStreamKey,
 		delayedKey: defaultProviderMarkDelayedKey,
+		dlqKey:     defaultProviderMarkDLQKey,
 		group:      defaultProviderMarkGroup,
+
+		pendingMinIdle:    30 * time.Second,
+		pendingClaimCount: 20,
 	}
 }
 
@@ -69,19 +78,19 @@ func (q *RedisProviderMarkQueue) Dequeue(ctx context.Context, consumer string, b
 	if err := q.promoteDue(ctx, time.Now().UTC()); err != nil {
 		return nil, err
 	}
-
-	streamResults, err := q.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group:    q.group,
-		Consumer: consumer,
-		Streams:  []string{q.streamKey, ">"},
-		Count:    1,
-		Block:    block,
-	}).Result()
-	if errors.Is(err, redis.Nil) {
-		return nil, nil
+	if err := q.reclaimStalePending(ctx, consumer); err != nil {
+		return nil, err
 	}
+
+	streamResults, err := q.readGroup(ctx, consumer, []string{q.streamKey, "0"}, 0)
 	if err != nil {
 		return nil, err
+	}
+	if len(streamResults) == 0 || len(streamResults[0].Messages) == 0 {
+		streamResults, err = q.readGroup(ctx, consumer, []string{q.streamKey, ">"}, block)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(streamResults) == 0 || len(streamResults[0].Messages) == 0 {
 		return nil, nil
@@ -100,6 +109,23 @@ func (q *RedisProviderMarkQueue) Dequeue(ctx context.Context, consumer string, b
 	}
 
 	return &ProviderMarkMessage{ID: xmsg.ID, Job: job, Consumer: consumer}, nil
+}
+
+func (q *RedisProviderMarkQueue) readGroup(ctx context.Context, consumer string, streams []string, block time.Duration) ([]redis.XStream, error) {
+	streamResults, err := q.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    q.group,
+		Consumer: consumer,
+		Streams:  streams,
+		Count:    1,
+		Block:    block,
+	}).Result()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return streamResults, nil
 }
 
 func (q *RedisProviderMarkQueue) Ack(ctx context.Context, messageID string) error {
@@ -135,6 +161,29 @@ func (q *RedisProviderMarkQueue) Requeue(ctx context.Context, job ProviderMarkJo
 	}).Err()
 }
 
+func (q *RedisProviderMarkQueue) DeadLetter(ctx context.Context, job ProviderMarkJob, reason string) error {
+	now := time.Now().UTC()
+	if job.EnqueuedAt.IsZero() {
+		job.EnqueuedAt = now
+	}
+	if job.EarliestProcessAt.IsZero() {
+		job.EarliestProcessAt = now
+	}
+	if reason == "" {
+		reason = "unspecified"
+	}
+
+	values := q.jobFields(job)
+	values["deadletter_reason"] = reason
+	values["deadletter_at"] = now.Format(time.RFC3339Nano)
+
+	_, err := q.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: q.dlqKey,
+		Values: values,
+	}).Result()
+	return err
+}
+
 func (q *RedisProviderMarkQueue) ensureGroup(ctx context.Context) error {
 	err := q.rdb.XGroupCreateMkStream(ctx, q.streamKey, q.group, "0").Err()
 	if err == nil {
@@ -149,6 +198,7 @@ func (q *RedisProviderMarkQueue) ensureGroup(ctx context.Context) error {
 func (q *RedisProviderMarkQueue) promoteDue(ctx context.Context, now time.Time) error {
 	entries, err := q.rdb.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
 		Key:    q.delayedKey,
+		ByScore: true,
 		Start:  "-inf",
 		Stop:   strconv.FormatInt(now.UnixMilli(), 10),
 		Offset: 0,
@@ -174,6 +224,51 @@ func (q *RedisProviderMarkQueue) promoteDue(ctx context.Context, now time.Time) 
 		if err := q.Enqueue(ctx, job); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func (q *RedisProviderMarkQueue) reclaimStalePending(ctx context.Context, consumer string) error {
+	pending, err := q.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: q.streamKey,
+		Group:  q.group,
+		Start:  "-",
+		End:    "+",
+		Count:  q.pendingClaimCount,
+	}).Result()
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unknown") || strings.Contains(strings.ToLower(err.Error()), "not supported") {
+			return nil
+		}
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	ids := make([]string, 0, len(pending))
+	for _, item := range pending {
+		if item.Idle >= q.pendingMinIdle {
+			ids = append(ids, item.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	_, err = q.rdb.XClaim(ctx, &redis.XClaimArgs{
+		Stream:   q.streamKey,
+		Group:    q.group,
+		Consumer: consumer,
+		MinIdle:  q.pendingMinIdle,
+		Messages: ids,
+	}).Result()
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unknown") || strings.Contains(strings.ToLower(err.Error()), "not supported") {
+			return nil
+		}
+		return err
 	}
 
 	return nil

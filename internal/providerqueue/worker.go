@@ -9,12 +9,17 @@ import (
 
 	"github.com/karma-234/mtg-bot/internal/botruntime"
 	"github.com/karma-234/mtg-bot/internal/cache"
+	"github.com/karma-234/mtg-bot/internal/observability"
 	"github.com/karma-234/mtg-bot/internal/service"
 	"gopkg.in/telebot.v4"
 )
 
 type ProviderPaidMarker interface {
 	MarkOrderPaid(opts service.MarkOrderPaidRequest) (*http.Response, error)
+}
+
+type providerMarkDeadLetterQueue interface {
+	DeadLetter(ctx context.Context, job cache.ProviderMarkJob, reason string) error
 }
 
 type Worker struct {
@@ -118,9 +123,47 @@ func (w *Worker) processMessage(ctx context.Context, msg *cache.ProviderMarkMess
 		intent.Status = service.PaymentIntentProviderFailed
 		intent.LastError = markErr.Error()
 		intent.RetryCount++
+		observability.Global().RetryCount.Inc()
+		if w.retryPolicy.IsExhausted(intent.RetryCount) {
+			observability.Global().RetryExhausted.Inc()
+			observability.Warn("provider_mark_retry_exhausted", observability.LogFields{
+				Component: "providerqueue",
+				OrderID:   intent.OrderID,
+				ChatID:    intent.ChatID,
+				Intent:    intent.PaymentID,
+				Extra: map[string]any{
+					"retry_count":  intent.RetryCount,
+					"max_attempts": w.retryPolicy.MaxAttempts,
+				},
+				Error: markErr,
+			})
+			intent.NextRetryAt = time.Time{}
+			intent.UpdatedAt = now
+			intent.LastError = fmt.Sprintf("provider mark exhausted after %d attempts: %v", intent.RetryCount, markErr)
+			if err := w.intentStore.Save(ctx, intent); err != nil {
+				return err
+			}
+			if dlq, ok := w.queue.(providerMarkDeadLetterQueue); ok {
+				if err := dlq.DeadLetter(ctx, msg.Job, intent.LastError); err != nil {
+					return err
+				}
+			}
+			return w.queue.Ack(ctx, msg.ID)
+		}
+
 		delay := w.retryPolicy.NextDelay(intent.RetryCount)
 		intent.NextRetryAt = now.Add(delay)
 		intent.UpdatedAt = now
+		observability.Debug("provider_mark_retry_scheduled", observability.LogFields{
+			Component: "providerqueue",
+			OrderID:   intent.OrderID,
+			ChatID:    intent.ChatID,
+			Intent:    intent.PaymentID,
+			Extra: map[string]any{
+				"retry_count": intent.RetryCount,
+				"delay_ms":    delay.Milliseconds(),
+			},
+		})
 		if err := w.intentStore.Save(ctx, intent); err != nil {
 			return err
 		}
