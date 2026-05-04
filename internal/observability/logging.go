@@ -13,10 +13,10 @@ type LogFields struct {
 	CorrelationID string
 	Component     string
 	OrderID       string
-	ChatID        int64
 	Intent        string
 	Error         error
 	Extra         map[string]any
+	ChatID        int64
 }
 
 // Log performs structured logging with fields.

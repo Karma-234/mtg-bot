@@ -277,20 +277,20 @@ type PaymentTerm struct {
 }
 
 type PaymentConfigVo struct {
+	Items       []any  `json:"items"`
 	PaymentType string `json:"paymentType"`
-	CheckType   int    `json:"checkType"`
-	Sort        int    `json:"sort"`
 	PaymentName string `json:"paymentName"`
 	AddTips     string `json:"addTips"`
 	ItemTips    string `json:"itemTips"`
 	Online      int    `json:"online"`
-	Items       []any  `json:"items"`
+	CheckType   int    `json:"checkType"`
+	Sort        int    `json:"sort"`
 }
 
 type OrderExtension struct {
-	IsDelayWithdraw bool   `json:"isDelayWithdraw"`
 	DelayTime       string `json:"delayTime"`
 	StartTime       string `json:"startTime"`
+	IsDelayWithdraw bool   `json:"isDelayWithdraw"`
 }
 
 type AppraiseInfo struct {

@@ -7,6 +7,7 @@ import (
 
 // Metrics holds counters and gauges for operational visibility.
 type Metrics struct {
+	mu sync.RWMutex
 	// Poll cycle timing
 	PollCycleDurationMS *Histogram
 	PollCycleCount      *Counter
@@ -28,28 +29,27 @@ type Metrics struct {
 	PaymentIntentCreated     *Counter
 	PaymentIntentTransferred *Counter
 	PaymentIntentFailed      *Counter
-
-	mu sync.RWMutex
 }
 
 // Counter tracks occurrences of an event.
 type Counter struct {
 	name  string
-	value int64
 	mu    sync.Mutex
+	value int64
 }
 
 // Gauge tracks a value that can go up and down.
 type Gauge struct {
-	name  string
-	value int64
+	name string
+
 	mu    sync.Mutex
+	value int64
 }
 
 // Histogram records values that should be aggregated over time (min, max, avg, percentiles).
 type Histogram struct {
-	name    string
 	buckets []int64 // Duration in milliseconds
+	name    string
 	mu      sync.Mutex
 }
 

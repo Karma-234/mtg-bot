@@ -40,12 +40,12 @@ type TransferVerifier interface {
 type paystackEvent struct {
 	Event string `json:"event"`
 	Data  struct {
-		ID           int64  `json:"id"`
 		Reference    string `json:"reference"`
 		TransferCode string `json:"transfer_code"`
 		Status       string `json:"status"`
-		Amount       int64  `json:"amount"`
 		Currency     string `json:"currency"`
+		Amount       int64  `json:"amount"`
+		ID           int64  `json:"id"`
 	} `json:"data"`
 }
 

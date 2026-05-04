@@ -28,9 +28,9 @@ type Worker struct {
 	workflowStore cache.WorkflowStore
 	orderMarker   ProviderPaidMarker
 	retryPolicy   botruntime.RetryPolicy
-	bot           *telebot.Bot
 	consumerName  string
 	blockFor      time.Duration
+	bot           *telebot.Bot
 }
 
 func NewWorker(
@@ -39,8 +39,8 @@ func NewWorker(
 	workflowStore cache.WorkflowStore,
 	orderMarker ProviderPaidMarker,
 	retryPolicy botruntime.RetryPolicy,
-	bot *telebot.Bot,
 	consumerName string,
+	bot *telebot.Bot,
 ) *Worker {
 	if consumerName == "" {
 		consumerName = fmt.Sprintf("provider-worker-%d", time.Now().UnixNano())

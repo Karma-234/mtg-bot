@@ -63,13 +63,12 @@ type RecipientDetails struct {
 }
 
 type RecipientData struct {
-	RecipientCode string           `json:"recipient_code"`
-	Name          string           `json:"name"`
-	Type          string           `json:"type"`
-	Currency      string           `json:"currency"`
-	Details       RecipientDetails `json:"details"`
-	Active        bool             `json:"active"`
-	ID            int64            `json:"id"`
+	Currency      string `json:"currency"`
+	RecipientCode string `json:"recipient_code"`
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	ID            int64  `json:"id"`
+	Active        bool   `json:"active"`
 }
 
 type CreateRecipientResponse struct {
@@ -79,22 +78,22 @@ type CreateRecipientResponse struct {
 
 type InitiateTransferRequest struct {
 	Source    string `json:"source"`    // always "balance"
-	Amount    int64  `json:"amount"`    // kobo
 	Recipient string `json:"recipient"` // recipient_code e.g. RCP_xxx
 	Reference string `json:"reference"` // 16-50 chars, lowercase+digits+-_
 	Reason    string `json:"reason,omitempty"`
 	Currency  string `json:"currency,omitempty"` // defaults NGN
+	Amount    int64  `json:"amount"`             // kobo
 }
 
 type TransferData struct {
-	ID           int64  `json:"id"`
-	Amount       int64  `json:"amount"`
 	Currency     string `json:"currency"`
 	TransferCode string `json:"transfer_code"`
 	Reference    string `json:"reference"`
 	Status       string `json:"status"` // "pending", "success", "failed", "otp"
 	Reason       string `json:"reason"`
 	CreatedAt    string `json:"createdAt"`
+	ID           int64  `json:"id"`
+	Amount       int64  `json:"amount"`
 }
 
 type TransferResponse struct {
@@ -104,8 +103,8 @@ type TransferResponse struct {
 
 type InitTransactionRequest struct {
 	Email    string `json:"email"`
-	Amount   int64  `json:"amount"` // kobo
 	Callback string `json:"callback_url,omitempty"`
+	Amount   int64  `json:"amount"` // kobo
 }
 
 type InitTransactionData struct {

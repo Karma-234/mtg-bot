@@ -27,8 +27,8 @@ type ChatMessageRequest struct {
 }
 
 type ChatSessionQueryRequest struct {
-	PageSize   int     `json:"size"`
 	SessionID  *string `json:"sessionId,omitempty"`
 	UserMaskID *string `json:"userMaskId,omitempty"`
 	LastID     *string `json:"lastId,omitempty"`
+	PageSize   int     `json:"size"`
 }

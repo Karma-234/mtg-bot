@@ -47,10 +47,10 @@ type PaymentIntentStore interface {
 type ProviderMarkJob struct {
 	OrderID           string    `json:"orderId"`
 	PaymentReference  string    `json:"paymentReference"`
-	ChatID            int64     `json:"chatId"`
-	Attempt           int       `json:"attempt"`
 	EarliestProcessAt time.Time `json:"earliestProcessAt"`
 	EnqueuedAt        time.Time `json:"enqueuedAt"`
+	ChatID            int64     `json:"chatId"`
+	Attempt           int       `json:"attempt"`
 }
 
 type ProviderMarkMessage struct {

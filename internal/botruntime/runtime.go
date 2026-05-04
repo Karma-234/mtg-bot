@@ -30,10 +30,10 @@ type PaymentExecutor interface {
 }
 
 type scheduledTask struct {
-	id       uint64
 	cancel   context.CancelFunc
 	provider string
 	deadline time.Time
+	id       uint64
 }
 
 // TaskManager orchestrates poll-based order discovery, workflow state transitions, and payment initiation.
@@ -41,17 +41,17 @@ type scheduledTask struct {
 // Reconciliation is ownership-aware: polling remains mandatory for discovery; completion
 // side effects are delegated to webhook + worker for event-driven handlers.
 type TaskManager struct {
-	tasks         map[int64]scheduledTask // Active polling tasks by chat ID
-	nextTaskID    uint64                  // Monotonic task ID counter
-	processing    map[string]struct{}     // Lock set for per-order exclusive processing
-	workflowStore cache.WorkflowStore     // Persistent workflow state store
-	retryPolicy   RetryPolicy             // Unified retry configuration (backoff, exhaustion)
-	now           func() time.Time        // Mock-friendly time source
-	mu            sync.RWMutex            // Protects tasks and nextTaskID
+	workflowStore cache.WorkflowStore      // Persistent workflow state store
+	retryPolicy   RetryPolicy              // Unified retry configuration (backoff, exhaustion)
+	mu            sync.RWMutex             // Protects tasks and nextTaskID
+	paymentExec   PaymentExecutor          // Transfer execution service
+	paymentStore  cache.PaymentIntentStore // Payment intent state store
+	bankLookup    service.BankLookup       // Bank metadata provider
+	tasks         map[int64]scheduledTask  // Active polling tasks by chat ID
+	processing    map[string]struct{}      // Lock set for per-order exclusive processing
+	nextTaskID    uint64                   // Monotonic task ID counter
+	now           func() time.Time         // Mock-friendly time source
 
-	paymentExec  PaymentExecutor          // Transfer execution service
-	paymentStore cache.PaymentIntentStore // Payment intent state store
-	bankLookup   service.BankLookup       // Bank metadata provider
 }
 
 func NewTaskManager(workflowStore cache.WorkflowStore, retryPolicy RetryPolicy) *TaskManager {

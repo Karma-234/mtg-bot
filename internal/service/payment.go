@@ -25,16 +25,16 @@ type RecipientCodeStore interface {
 
 type AutoTransferRequest struct {
 	OrderID       string
-	ChatID        int64
 	Provider      string
 	Beneficiary   string
 	AccountNumber string
 	BankName      string
-	AmountKobo    int64
 	Currency      string
 	Reference     string
 	Reason        string
 	Country       string
+	ChatID        int64
+	AmountKobo    int64
 }
 
 type AutoTransferResult struct {

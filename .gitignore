@@ -1,5 +1,5 @@
 *.env
-spec.txt
+*.txt
 Makefile
 notes/main-cleanup-baseline.md
 *.json

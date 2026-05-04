@@ -113,8 +113,9 @@ func main() {
 		workflowStore,
 		merchantService,
 		retryPolicy,
-		b,
+
 		"provider-mark-main",
+		b,
 	)
 	go providerMarkWorker.Run(workerCtx)
 	webhookServer := &http.Server{

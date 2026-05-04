@@ -190,7 +190,7 @@ func TestWorkerProcessMessageSuccess(t *testing.T) {
 	intentStore := newMockIntentStore()
 	workflowStore := newMockWorkflowStore()
 	marker := &mockMarker{}
-	worker := NewWorker(queue, intentStore, workflowStore, marker, botruntime.DefaultRetryPolicy(), nil, "worker-a")
+	worker := NewWorker(queue, intentStore, workflowStore, marker, botruntime.DefaultRetryPolicy(), "worker-a", nil)
 
 	intent := &service.PaymentIntentRecord{PaymentID: "pi-1", ChatID: 1, OrderID: "order-1", PaystackReference: "ref-1", Status: service.PaymentIntentTransferSuccess, AmountKobo: 1000, Currency: "NGN", CreatedAt: now, UpdatedAt: now}
 	_ = intentStore.Create(context.Background(), intent)
@@ -223,7 +223,7 @@ func TestWorkerProcessMessageFailureRequeues(t *testing.T) {
 	intentStore := newMockIntentStore()
 	workflowStore := newMockWorkflowStore()
 	marker := &mockMarker{err: fmt.Errorf("temporary provider error")}
-	worker := NewWorker(queue, intentStore, workflowStore, marker, botruntime.DefaultRetryPolicy(), nil, "worker-b")
+	worker := NewWorker(queue, intentStore, workflowStore, marker, botruntime.DefaultRetryPolicy(), "worker-b", nil)
 
 	intent := &service.PaymentIntentRecord{PaymentID: "pi-2", ChatID: 2, OrderID: "order-2", PaystackReference: "ref-2", Status: service.PaymentIntentTransferSuccess, AmountKobo: 1500, Currency: "NGN", CreatedAt: now, UpdatedAt: now}
 	_ = intentStore.Create(context.Background(), intent)
@@ -256,7 +256,7 @@ func TestWorkerProcessMessageFailureExhaustedMovesToDLQ(t *testing.T) {
 	workflowStore := newMockWorkflowStore()
 	marker := &mockMarker{err: fmt.Errorf("temporary provider error")}
 	retryPolicy := botruntime.RetryPolicy{BaseBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, MaxAttempts: 1}
-	worker := NewWorker(queue, intentStore, workflowStore, marker, retryPolicy, nil, "worker-c")
+	worker := NewWorker(queue, intentStore, workflowStore, marker, retryPolicy, "worker-c", nil)
 
 	intent := &service.PaymentIntentRecord{PaymentID: "pi-3", ChatID: 3, OrderID: "order-3", PaystackReference: "ref-3", Status: service.PaymentIntentTransferSuccess, AmountKobo: 2000, Currency: "NGN", CreatedAt: now, UpdatedAt: now}
 	_ = intentStore.Create(context.Background(), intent)

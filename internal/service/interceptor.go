@@ -13,8 +13,8 @@ import (
 )
 
 type RequestInterceptor struct {
-	Base          http.RoundTripper
 	ServiceConfig MerchantServiceConfig
+	Base          http.RoundTripper
 }
 
 func (i *RequestInterceptor) RoundTrip(req *http.Request) (*http.Response, error) {
