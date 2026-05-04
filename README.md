@@ -1,6 +1,6 @@
 # mtg-bot
 
-> **Pay-as-you-go Telegram bot that automates Bybit P2P crypto order processing and executes NGN bank transfers via Paystack.**
+> **Pay-as-you-go autonomous agent bot that automates Bybit P2P crypto order processing and executes NGN bank transfers via Paystack. Merchants can attemd to orders without having to be there**
 
 [mtg-bot banner](docs/banner.png)
 
@@ -42,6 +42,7 @@
 4. Listens for the `transfer.success` webhook event from Paystack
 5. Marks the Bybit order as paid via the P2P API
 6. Reports status back to the user over Telegram
+7. Orders are being proceeesed while marchan can fous on other tasks without worry.
 
 The merchant charges the user the **total transfer budget + a service fee**. All state is stored in Redis; the bot is stateless across restarts.
 
